@@ -33,6 +33,18 @@ bool BatteryMonitor::begin() {
   return true;
 }
 
+int BatteryMonitor::readRawAdc(int samples) const {
+  samples = std::max(1, samples);
+  uint32_t sum = 0;
+
+  for (int i = 0; i < samples; ++i) {
+    sum += analogRead(BoardConfig::BatteryAdcPin);
+    delay(2);
+  }
+
+  return static_cast<int>((sum + samples / 2) / samples);
+}
+
 float BatteryMonitor::readRawVoltage(int samples) const {
   samples = std::max(1, samples);
   uint32_t sumMv = 0;
@@ -74,7 +86,11 @@ int BatteryMonitor::percentFromVoltage(float voltage) const {
 
 BatteryStatus BatteryMonitor::readStatus(int samples) const {
   BatteryStatus status;
-  status.voltage = readVoltage(samples);
+  samples = std::max(1, samples);
+  status.rawAdc = readRawAdc(samples);
+  const float rawVoltage = readRawVoltage(samples);
+  status.rawVoltageMv = static_cast<uint32_t>(rawVoltage * 1000.0f + 0.5f);
+  status.voltage = rawVoltage * BoardConfig::BatteryVoltageCalibration + BoardConfig::BatteryVoltageOffset;
   status.percent = percentFromVoltage(status.voltage);
   status.low = status.percent <= 20;
   status.critical = status.percent <= 10;

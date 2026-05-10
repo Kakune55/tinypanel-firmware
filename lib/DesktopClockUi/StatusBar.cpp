@@ -57,6 +57,12 @@ void StatusBar::draw(const DesktopClockUiModel& model) {
   drawSignalBars(wifiX - gap - wifiBarsWidth, 8, model.wifiConnected, model.wifiRssi, kInk);
 
   cursorX = wifiX - gap - wifiBarsWidth - groupGap;
+  if (model.hubSyncing || model.hubSyncFailed) {
+    const PixelIcons::Bitmap& hubIcon = model.hubSyncing ? PixelIcons::ServerSync : PixelIcons::ServerOffline;
+    UiDraw::bitmapScaled(display_, cursorX - hubIcon.width, 8, hubIcon, 1, kInk);
+    cursorX -= hubIcon.width + groupGap;
+  }
+
   if (model.ntpSyncing || model.ntpSyncFailed) {
     const PixelIcons::Bitmap& serverIcon = model.ntpSyncing ? PixelIcons::ServerSync : PixelIcons::ServerOffline;
     UiDraw::bitmapScaled(display_, cursorX - serverIcon.width, 8, serverIcon, 1, kInk);

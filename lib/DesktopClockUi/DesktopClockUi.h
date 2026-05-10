@@ -22,6 +22,8 @@ struct DesktopClockUiModel {
   bool ntpSynced = false;
   bool ntpSyncing = false;
   bool ntpSyncFailed = false;
+  bool hubSyncing = false;
+  bool hubSyncFailed = false;
   bool sdMounted = false;
   const char* sdStatus = "NO CARD";
   bool wifiConnected = false;

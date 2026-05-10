@@ -67,8 +67,8 @@ void batteryIcon(RlcdDisplay& display, int x, int y, const BatteryStatus& status
 
   const int filled = batteryFilledCells(status.percent);
   for (int i = 0; i < filled; ++i) {
-    const int cellRow = i / 7;
-    const int cellCol = i % 7;
+    const int cellRow = i % 3;
+    const int cellCol = i / 3;
     const int px = x + (2 + cellCol) * scale;
     const int py = y + (2 + cellRow) * scale;
     display.fillRect(px, py, scale, scale, black);

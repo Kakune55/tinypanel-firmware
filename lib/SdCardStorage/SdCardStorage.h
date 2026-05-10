@@ -19,6 +19,7 @@ class SdCardStorage {
   const char* mountPoint() const;
   const char* lastErrorText() const;
   uint64_t cardSizeBytes() const;
+  uint64_t usedBytes() const;
 
   bool exists(const char* path) const;
   bool writeText(const char* path, const String& text, bool append = false);

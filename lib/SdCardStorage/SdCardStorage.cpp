@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <dirent.h>
 #include <esp_vfs_fat.h>
+#include <ff.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -66,6 +67,23 @@ const char* SdCardStorage::lastErrorText() const {
 
 uint64_t SdCardStorage::cardSizeBytes() const {
   return cardSizeBytes_;
+}
+
+uint64_t SdCardStorage::usedBytes() const {
+  if (!mounted_) {
+    return 0;
+  }
+
+  FATFS* fs = nullptr;
+  DWORD freeClusters = 0;
+  if (f_getfree("0:", &freeClusters, &fs) != FR_OK || fs == nullptr) {
+    return 0;
+  }
+
+  const uint64_t bytesPerCluster = static_cast<uint64_t>(fs->csize) * fs->ssize;
+  const uint64_t total = static_cast<uint64_t>(fs->n_fatent - 2) * bytesPerCluster;
+  const uint64_t free = static_cast<uint64_t>(freeClusters) * bytesPerCluster;
+  return total > free ? total - free : 0;
 }
 
 bool SdCardStorage::exists(const char* path) const {

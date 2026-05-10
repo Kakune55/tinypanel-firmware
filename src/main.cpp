@@ -5,6 +5,7 @@
 #include "Button.h"
 #include "BoardConfig.h"
 #include "DesktopClockUi.h"
+#include "HubService.h"
 #include "I2cScanner.h"
 #include "RlcdDisplay.h"
 #include "RtcClock.h"
@@ -21,11 +22,14 @@
 namespace AppSecrets {
 constexpr const char* WifiSsid = "";
 constexpr const char* WifiPassword = "";
+constexpr const char* HubServerBaseURL = "";
+constexpr const char* HubServerApiKey = "";
 }  // namespace AppSecrets
 #endif
 
 namespace {
 
+constexpr const char* kDeviceId = "tinypanel-001";
 constexpr const char* kTimezone = "CST-8";
 constexpr uint32_t kBatteryPollMs = 60000;
 constexpr uint32_t kEnvironmentPollMs = 30000;
@@ -36,6 +40,7 @@ constexpr uint32_t kNtpRetryMs = 10UL * 60UL * 1000UL;
 BatteryMonitor battery;
 Button bootButton(BoardConfig::ButtonBoot);
 Button keyButton(BoardConfig::ButtonKey);
+HubService hub;
 I2cScanner i2cScanner;
 RlcdDisplay display;
 RtcClock rtc;
@@ -60,9 +65,46 @@ struct AppState {
   uint32_t lastRtcMs = 0;
   uint32_t lastWifiRetryMs = 0;
   uint32_t lastNtpAttemptMs = 0;
+  String bootId;
 };
 
 AppState app;
+
+String formatRtcTimestamp(const RtcDateTime& dt) {
+  if (!dt.valid) {
+    return "";
+  }
+
+  char buffer[32];
+  snprintf(buffer,
+           sizeof(buffer),
+           "%04u-%02u-%02uT%02u:%02u:%02u+08:00",
+           dt.year,
+           dt.month,
+           dt.day,
+           dt.hour,
+           dt.minute,
+           dt.second);
+  return String(buffer);
+}
+
+String makeBootId(const RtcDateTime& dt) {
+  if (dt.valid) {
+    char buffer[28];
+    snprintf(buffer,
+             sizeof(buffer),
+             "boot_%04u%02u%02u_%02u%02u%02u",
+             dt.year,
+             dt.month,
+             dt.day,
+             dt.hour,
+             dt.minute,
+             dt.second);
+    return String(buffer);
+  }
+
+  return String("boot_uptime_") + String(millis() / 1000UL);
+}
 
 DesktopClockUiModel buildUiModel() {
   DesktopClockUiModel model;
@@ -73,6 +115,8 @@ DesktopClockUiModel buildUiModel() {
   model.ntpSynced = app.ntpSynced;
   model.ntpSyncing = app.ntpSyncing;
   model.ntpSyncFailed = app.ntpSyncFailed;
+  model.hubSyncing = hub.isSyncing();
+  model.hubSyncFailed = hub.hasFailed();
   model.sdMounted = app.sdMounted;
   model.sdStatus = sdCard.lastErrorText();
   model.wifiConnected = wifi.isConnected();
@@ -88,6 +132,13 @@ DesktopClockUiModel buildUiModel() {
 void renderUi() {
   ui.render(buildUiModel());
   app.uiDirty = false;
+}
+
+void renderHubState() {
+  app.uiDirty = true;
+  if (display.isReady()) {
+    renderUi();
+  }
 }
 
 void readSensors(bool force = false) {
@@ -165,6 +216,40 @@ void handleWifi() {
   app.uiDirty = true;
 }
 
+HubTelemetrySnapshot buildHubTelemetrySnapshot() {
+  HubTelemetrySnapshot snapshot;
+  snapshot.deviceId = kDeviceId;
+  snapshot.bootId = app.bootId;
+  snapshot.reportTimestamp = formatRtcTimestamp(app.now);
+  snapshot.uptimeS = millis() / 1000UL;
+
+  snapshot.battery = app.battery;
+  snapshot.usbConnected = false;
+
+  snapshot.environment = app.environment;
+
+  snapshot.wifiConnected = wifi.isConnected();
+  snapshot.wifiSsid = wifi.ssid();
+  snapshot.wifiRssiDbm = wifi.rssi();
+  snapshot.wifiIp = wifi.ipAddress();
+
+  snapshot.freeHeapBytes = ESP.getFreeHeap();
+  snapshot.freePsramBytes = ESP.getFreePsram();
+  snapshot.ntpSync = app.ntpSynced;
+
+  snapshot.sdCardPresent = sdCard.isMounted();
+  snapshot.sdCardTotalMb = sdCard.cardSizeBytes() / (1024UL * 1024UL);
+  snapshot.sdCardUsedMb = sdCard.usedBytes() / (1024UL * 1024UL);
+  return snapshot;
+}
+
+void syncHubTelemetry(bool force = false) {
+  const HubRequestResult result = hub.syncTelemetry(buildHubTelemetrySnapshot(), force, wifi.isConnected(), renderHubState);
+  if (result.attempted) {
+    app.uiDirty = true;
+  }
+}
+
 void handleButtons() {
   keyButton.update();
   bootButton.update();
@@ -182,6 +267,7 @@ void handleButtons() {
     }
     if (longPress) {
       trySyncTime(true);
+      syncHubTelemetry(true);
     }
     app.uiDirty = true;
   }
@@ -221,6 +307,8 @@ void setup() {
   } else {
     Serial.println("WiFi: create include/AppSecrets.h from AppSecrets.example.h to enable network");
   }
+  hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, kDeviceId);
+  Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
 
   if (!display.begin()) {
     Serial.println("RLCD init failed");
@@ -229,7 +317,9 @@ void setup() {
 
   readSensors(true);
   trySyncTime(true);
+  app.bootId = makeBootId(app.now);
   renderUi();
+  syncHubTelemetry(true);
 }
 
 void loop() {
@@ -237,6 +327,10 @@ void loop() {
   handleWifi();
   trySyncTime(false);
   readSensors(false);
+  syncHubTelemetry(false);
+  if (hub.update()) {
+    app.uiDirty = true;
+  }
 
   if (app.uiDirty) {
     renderUi();
