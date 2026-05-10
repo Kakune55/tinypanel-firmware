@@ -10,7 +10,7 @@
 enum class DesktopClockPage {
   Clock,
   Message,
-  Dashboard,
+  Weather,
   System,
 };
 
@@ -37,6 +37,7 @@ struct DesktopClockUiModel {
   uint32_t freePsram = 0;
   bool newMessageAlert = false;
   bool newMessageAlertInvert = false;
+  HubWeather weather;
   const HubMessage* messages = nullptr;
   size_t messageCount = 0;
   size_t selectedMessage = 0;

@@ -24,6 +24,7 @@ constexpr const char* kDeviceId = "tinypanel-001";
 constexpr const char* kTimezone = "CST-8";
 constexpr uint32_t kHubTelemetryMs = 5UL * 60UL * 1000UL;
 constexpr uint32_t kHubMessagePollMs = 60UL * 1000UL;
+constexpr uint32_t kHubWeatherPollMs = 10UL * 60UL * 1000UL;
 constexpr uint32_t kHubSyncIconMinMs = 3000;
 constexpr uint8_t kHubMessageLimit = 10;
 constexpr const char* kHubMessageChannel = "desk";
@@ -159,6 +160,7 @@ void setup() {
   hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, kDeviceId);
   hub.configureTelemetry(kHubTelemetryMs, kHubSyncIconMinMs);
   hub.configureMessages(kHubMessageChannel, kHubMessagePollMs, kHubMessageLimit);
+  hub.configureWeather(kHubWeatherPollMs);
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
   bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
 
@@ -173,6 +175,7 @@ void setup() {
   controller.setBootScreenActive(false);
   controller.renderUi();
   controller.syncHubTelemetry(true);
+  controller.pollWeather(true);
   controller.pollHubMessages(true);
 }
 

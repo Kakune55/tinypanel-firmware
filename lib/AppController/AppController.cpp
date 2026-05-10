@@ -147,6 +147,13 @@ void AppController::pollHubMessages(bool force) {
   markUiDirty();
 }
 
+void AppController::pollWeather(bool force) {
+  const HubRequestResult result = hub_.pollWeather(force, wifi_.isConnected(), handleHubStateChanged);
+  if (result.attempted) {
+    markUiDirty();
+  }
+}
+
 void AppController::loopOnce() {
   handleButtons();
   handlePendingKeyClick();
@@ -155,6 +162,7 @@ void AppController::loopOnce() {
   readSensors(false);
   syncHubTelemetry(false);
   pollHubMessages(false);
+  pollWeather(false);
 
   if (hub_.update()) {
     markUiDirty();
@@ -240,6 +248,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
       state_.newMessageAlert && ((millis() / config_.newMessageBlinkMs) % 2 == 1);
+  model.weather = hub_.weather();
   model.messages = hub_.messages();
   model.messageCount = hub_.messageCount();
   model.selectedMessage = state_.selectedMessage;
@@ -363,6 +372,7 @@ void AppController::handleSingleKeyClick() {
     sdCard_.printInfo(Serial);
   }
   readSensors(true);
+  pollWeather(true);
   pollHubMessages(true);
   markUiDirty();
 }
@@ -413,6 +423,7 @@ void AppController::handleButtons() {
       trySyncTime(true);
       syncHubTelemetry(true);
       pollHubMessages(true);
+      pollWeather(true);
       markUiDirty();
     } else if (state_.newMessageAlert) {
       state_.pendingKeyClick = false;

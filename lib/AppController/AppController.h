@@ -55,6 +55,7 @@ class AppController {
   void renderUi();
   void syncHubTelemetry(bool force = false);
   void pollHubMessages(bool force = false);
+  void pollWeather(bool force = false);
   void loopOnce();
 
  private:

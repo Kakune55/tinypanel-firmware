@@ -52,6 +52,10 @@ void HubService::configureMessages(const char* channel, uint32_t pollIntervalMs,
   }
 }
 
+void HubService::configureWeather(uint32_t pollIntervalMs) {
+  weatherPollIntervalMs_ = pollIntervalMs;
+}
+
 bool HubService::isSyncing() const {
   return syncState_ == HubSyncState::Syncing;
 }
@@ -104,6 +108,21 @@ HubRequestResult HubService::pollMessages(bool force,
   return result;
 }
 
+HubRequestResult HubService::pollWeather(bool force,
+                                         bool networkReady,
+                                         HubStateChangedCallback onStateChanged,
+                                         uint32_t nowMs) {
+  if (!weatherPollDue(force, nowMs) || !isConfigured() || !networkReady) {
+    return {};
+  }
+
+  beginRequest(nowMs, onStateChanged);
+  HubRequestResult result = fetchWeather();
+  lastWeatherPollMs_ = nowMs;
+  completeRequest(result, nowMs);
+  return result;
+}
+
 size_t HubService::messageCount() const {
   return messageCount_;
 }
@@ -114,6 +133,10 @@ const HubMessage* HubService::messages() const {
 
 const HubMessage* HubService::messageAt(size_t index) const {
   return index < messageCount_ ? &messages_[index] : nullptr;
+}
+
+const HubWeather& HubService::weather() const {
+  return weather_;
 }
 
 HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot) {
@@ -202,6 +225,73 @@ HubRequestResult HubService::syncSubscription() {
   return result;
 }
 
+HubRequestResult HubService::fetchWeather() {
+  JsonDocument doc;
+  HubRequestResult result = getJson("/weather", doc, "weather");
+  if (!result.ok) {
+    return result;
+  }
+
+  HubWeather weather;
+  weather.location = doc["location"] | "";
+  weather.condition = doc["condition"] | "";
+  weather.icon = doc["icon"] | "";
+  weather.temperature = doc["temperature"] | 0;
+  weather.humidity = doc["humidity"] | 0;
+  weather.updatedAt = doc["updated_at"] | "";
+
+  JsonArray hourly = doc["hourly"].as<JsonArray>();
+  for (JsonObject item : hourly) {
+    if (weather.hourlyCount >= HubWeather::MaxHourly) {
+      break;
+    }
+    HubWeatherHourly& out = weather.hourly[weather.hourlyCount++];
+    out.time = item["time"] | "";
+    out.condition = item["condition"] | "";
+    out.icon = item["icon"] | "";
+    out.temperature = item["temperature"] | 0;
+    out.humidity = item["humidity"] | 0;
+    out.precipitation = item["precipitation"] | 0.0f;
+    out.precipProbability = item["precip_probability"] | -1;
+    out.windDirection = item["wind_direction"] | "";
+    out.windScale = item["wind_scale"] | "";
+    out.windSpeed = item["wind_speed"] | 0;
+  }
+
+  JsonArray daily = doc["daily"].as<JsonArray>();
+  for (JsonObject item : daily) {
+    if (weather.dailyCount >= HubWeather::MaxDaily) {
+      break;
+    }
+    HubWeatherDaily& out = weather.daily[weather.dailyCount++];
+    out.date = item["date"] | "";
+    out.sunrise = item["sunrise"] | "";
+    out.sunset = item["sunset"] | "";
+    out.conditionDay = item["condition_day"] | "";
+    out.conditionNight = item["condition_night"] | "";
+    out.iconDay = item["icon_day"] | "";
+    out.iconNight = item["icon_night"] | "";
+    out.temperatureMin = item["temperature_min"] | 0;
+    out.temperatureMax = item["temperature_max"] | 0;
+    out.humidity = item["humidity"] | 0;
+    out.precipitation = item["precipitation"] | 0.0f;
+    out.precipProbability = item["precip_probability"] | -1;
+    out.windDirectionDay = item["wind_direction_day"] | "";
+    out.windScaleDay = item["wind_scale_day"] | "";
+    out.windSpeedDay = item["wind_speed_day"] | 0;
+    out.windDirectionNight = item["wind_direction_night"] | "";
+    out.windScaleNight = item["wind_scale_night"] | "";
+    out.windSpeedNight = item["wind_speed_night"] | 0;
+  }
+
+  weather.valid = weather.condition.length() > 0 || weather.hourlyCount > 0 || weather.dailyCount > 0;
+  result.ok = weather.valid;
+  if (result.ok) {
+    weather_ = weather;
+  }
+  return result;
+}
+
 HubRequestResult HubService::fetchMessage(int id, HubMessage& out) {
   JsonDocument doc;
   HubRequestResult result = getJson((String("/messages/") + id).c_str(), doc, "message");
@@ -285,7 +375,8 @@ HubRequestResult HubService::requestJson(const char* method,
   }
   result.ok = result.statusCode >= 200 && result.statusCode < 300;
   if (result.ok && response) {
-    DeserializationError error = deserializeJson(*response, http.getStream());
+    const String responseBody = http.getString();
+    DeserializationError error = deserializeJson(*response, responseBody);
     result.ok = !error;
     if (error) {
       Serial.printf("Hub: %s JSON failed (%s)\n", label, error.c_str());
@@ -302,6 +393,10 @@ bool HubService::telemetryDue(bool force, uint32_t nowMs) const {
 
 bool HubService::messagePollDue(bool force, uint32_t nowMs) const {
   return force || lastMessagePollMs_ == 0 || nowMs - lastMessagePollMs_ >= messagePollIntervalMs_;
+}
+
+bool HubService::weatherPollDue(bool force, uint32_t nowMs) const {
+  return force || lastWeatherPollMs_ == 0 || nowMs - lastWeatherPollMs_ >= weatherPollIntervalMs_;
 }
 
 void HubService::beginRequest(uint32_t nowMs, HubStateChangedCallback onStateChanged) {

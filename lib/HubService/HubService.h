@@ -45,6 +45,56 @@ struct HubMessage {
   String createdAt;
 };
 
+struct HubWeatherHourly {
+  String time;
+  String condition;
+  String icon;
+  int temperature = 0;
+  int humidity = 0;
+  float precipitation = 0.0f;
+  int precipProbability = -1;
+  String windDirection;
+  String windScale;
+  int windSpeed = 0;
+};
+
+struct HubWeatherDaily {
+  String date;
+  String sunrise;
+  String sunset;
+  String conditionDay;
+  String conditionNight;
+  String iconDay;
+  String iconNight;
+  int temperatureMin = 0;
+  int temperatureMax = 0;
+  int humidity = 0;
+  float precipitation = 0.0f;
+  int precipProbability = -1;
+  String windDirectionDay;
+  String windScaleDay;
+  int windSpeedDay = 0;
+  String windDirectionNight;
+  String windScaleNight;
+  int windSpeedNight = 0;
+};
+
+struct HubWeather {
+  bool valid = false;
+  String location;
+  String condition;
+  String icon;
+  int temperature = 0;
+  int humidity = 0;
+  String updatedAt;
+  static constexpr size_t MaxHourly = 16;
+  static constexpr size_t MaxDaily = 4;
+  HubWeatherHourly hourly[MaxHourly];
+  HubWeatherDaily daily[MaxDaily];
+  size_t hourlyCount = 0;
+  size_t dailyCount = 0;
+};
+
 using HubStateChangedCallback = void (*)();
 
 enum class HubSyncState {
@@ -60,6 +110,7 @@ public:
   void begin(const char* baseUrl, const char* apiKey, const char* deviceId);
   void configureTelemetry(uint32_t intervalMs, uint32_t syncIconMinMs);
   void configureMessages(const char* channel, uint32_t pollIntervalMs, uint8_t limit);
+  void configureWeather(uint32_t pollIntervalMs);
   bool isConfigured() const;
   bool isSyncing() const;
   bool hasFailed() const;
@@ -73,13 +124,19 @@ public:
                                 bool networkReady,
                                 HubStateChangedCallback onStateChanged = nullptr,
                                 uint32_t nowMs = millis());
+  HubRequestResult pollWeather(bool force,
+                               bool networkReady,
+                               HubStateChangedCallback onStateChanged = nullptr,
+                               uint32_t nowMs = millis());
   size_t messageCount() const;
   const HubMessage* messages() const;
   const HubMessage* messageAt(size_t index) const;
+  const HubWeather& weather() const;
 
 private:
   HubRequestResult sendTelemetry(const HubTelemetrySnapshot& snapshot);
   HubRequestResult syncSubscription();
+  HubRequestResult fetchWeather();
   HubRequestResult fetchMessage(int id, HubMessage& out);
   HubRequestResult ackMessage(int id);
   void storeMessage(const HubMessage& message);
@@ -89,6 +146,7 @@ private:
   HubRequestResult requestJson(const char* method, const char* path, const String* body, JsonDocument* response, const char* label);
   bool telemetryDue(bool force, uint32_t nowMs) const;
   bool messagePollDue(bool force, uint32_t nowMs) const;
+  bool weatherPollDue(bool force, uint32_t nowMs) const;
   void beginRequest(uint32_t nowMs, HubStateChangedCallback onStateChanged);
   void completeRequest(const HubRequestResult& result, uint32_t nowMs);
   String urlEncode(const String& value) const;
@@ -101,9 +159,11 @@ private:
   uint32_t sequence_ = 0;
   uint32_t telemetryIntervalMs_ = 5UL * 60UL * 1000UL;
   uint32_t messagePollIntervalMs_ = 60UL * 1000UL;
+  uint32_t weatherPollIntervalMs_ = 10UL * 60UL * 1000UL;
   uint32_t syncIconMinMs_ = 3000;
   uint32_t lastTelemetryMs_ = 0;
   uint32_t lastMessagePollMs_ = 0;
+  uint32_t lastWeatherPollMs_ = 0;
   uint32_t syncMinUntilMs_ = 0;
   HubSyncState syncState_ = HubSyncState::Idle;
   bool requestResultPending_ = false;
@@ -112,4 +172,5 @@ private:
   uint8_t messageLimit_ = MaxMessages;
   HubMessage messages_[MaxMessages];
   size_t messageCount_ = 0;
+  HubWeather weather_;
 };

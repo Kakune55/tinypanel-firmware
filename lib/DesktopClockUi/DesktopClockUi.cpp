@@ -1,9 +1,14 @@
 #include "DesktopClockUi.h"
 
+#include <cstring>
+
+#include "PixelFont5x7.h"
 #include "StatusBar.h"
 #include "UiDraw.h"
 
 namespace {
+
+const PixelIcons::Bitmap& weatherIcon(const String& code);
 
 const char* weekdayName(uint8_t weekday) {
   static constexpr const char* kNames[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
@@ -56,8 +61,14 @@ void drawClippedText(RlcdDisplay& display, int x, int y, const String& text, int
   const int limit = min(maxChars, static_cast<int>(sizeof(buffer) - 1));
   int out = 0;
   for (int i = 0; i < static_cast<int>(text.length()) && out < limit; ++i) {
-    const char c = text[i];
-    buffer[out++] = (c == '\n' || c == '\r') ? ' ' : c;
+    const uint8_t c = static_cast<uint8_t>(text[i]);
+    if (c == '\n' || c == '\r') {
+      buffer[out++] = ' ';
+    } else if (c < 32 || c > 126) {
+      buffer[out++] = '?';
+    } else {
+      buffer[out++] = static_cast<char>(c);
+    }
   }
   buffer[out] = '\0';
   display.drawText(x, y, buffer, black, scale);
@@ -153,48 +164,191 @@ void drawClockPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCloc
   drawMetricCard(display, 146, 184, 108, 68, "HUM", hum, "ROOM");
 
   display.drawRoundRect(268, 184, 108, 68, 7, true);
-  display.drawText(280, 194, "BATTERY", true, 1);
-  UiDraw::progressBar(display, 282, 216, 74, 12, model.battery.percent);
-  snprintf(text, sizeof(text), "%d%%", model.battery.percent);
-  display.drawText(322, 238, text, true, 1);
-  snprintf(text, sizeof(text), "%.2fV", model.battery.voltage);
-  display.drawText(282, 238, text, true, 1);
+  display.drawText(278, 194, "WEATHER", true, 1);
+  const bool weatherOk = model.weather.valid;
+  char tempText[16];
+  char humText[16];
+  if (weatherOk) {
+    snprintf(tempText, sizeof(tempText), "%dC", model.weather.temperature);
+    snprintf(humText, sizeof(humText), "%d%%", model.weather.humidity);
+  } else {
+    snprintf(tempText, sizeof(tempText), "--");
+    snprintf(humText, sizeof(humText), "--");
+  }
+
+  const PixelIcons::Bitmap& icon = weatherOk ? weatherIcon(model.weather.icon) : PixelIcons::WeatherUnknown;
+  UiDraw::bitmapScaled(display, 274, 212, icon, 1, true);
+  display.drawText(300, 212, tempText, true, 2);
+  display.drawText(300, 236, humText, true, 1);
 
   display.drawText(24, 270, "KEY REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }
 
-void drawDashboardPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
-  char text[48];
+String formatWeatherTime(const String& value) {
+  if (value.length() >= 16 && value[10] == 'T') {
+    int hour = value.substring(11, 13).toInt();
+    const int minute = value.substring(14, 16).toInt();
+    if (value.endsWith("Z")) {
+      constexpr int kLocalUtcOffsetHours = 8;
+      hour = (hour + kLocalUtcOffsetHours) % 24;
+    }
+
+    char buffer[6];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", hour, minute);
+    return String(buffer);
+  }
+  return value;
+}
+
+String formatWeatherDate(const String& value) {
+  if (value.length() >= 10) {
+    return value.substring(5, 10);
+  }
+  return value;
+}
+
+void drawCenteredText(RlcdDisplay& display, int x, int y, int w, const char* text, bool black = true, int scale = 1) {
+  const int textW = static_cast<int>(std::strlen(text)) * PixelFont5x7::Advance * scale;
+  display.drawText(x + (w - textW) / 2, y, text, black, scale);
+}
+
+const PixelIcons::Bitmap& weatherIcon(const String& code) {
+  const int value = code.toInt();
+  if (value == 100 || value == 150) {
+    return PixelIcons::WeatherSun;
+  }
+  if ((value >= 101 && value <= 103) || (value >= 151 && value <= 153)) {
+    return PixelIcons::WeatherCloud;
+  }
+  if (value == 104 || value == 154) {
+    return PixelIcons::WeatherOvercast;
+  }
+  if (value >= 300 && value < 400) {
+    return PixelIcons::WeatherRain;
+  }
+  if (value >= 400 && value < 500) {
+    return PixelIcons::WeatherSnow;
+  }
+  if (value >= 500 && value < 600) {
+    return PixelIcons::WeatherFog;
+  }
+  return PixelIcons::WeatherUnknown;
+}
+
+void drawWeatherIconCentered(RlcdDisplay& display, int x, int y, int w, const String& code, int scale) {
+  const PixelIcons::Bitmap& icon = weatherIcon(code);
+  const int iconW = icon.width * scale;
+  UiDraw::bitmapScaled(display, x + (w - iconW) / 2, y, icon, scale, true);
+}
+
+void drawWeatherPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
+  char text[56];
 
   display.clear(true);
   statusBar.draw(model);
 
-  display.drawText(18, 48, "TODAY", true, 4);
-  display.drawFastHLine(18, 88, 364, true);
+  if (!model.weather.valid) {
+    display.drawRect(12, 44, 376, 214, true);
+    display.drawText(34, 112, model.wifiConnected ? "Weather pending" : "Weather offline", true, 2);
+    display.drawText(34, 144, "KEY REFRESH", true, 1);
+    display.drawText(24, 270, "KEY REFRESH", true, 1);
+    display.drawText(286, 270, "BOOT NEXT", true, 1);
+    drawPageDots(display, model.page);
+    return;
+  }
 
-  snprintf(text, sizeof(text), "UPTIME %luh %lum",
-           static_cast<unsigned long>(model.uptimeMs / 3600000UL),
-           static_cast<unsigned long>((model.uptimeMs / 60000UL) % 60UL));
-  display.drawText(24, 106, text, true, 1);
+  constexpr int gridX = 8;
+  constexpr int topY = 36;
+  constexpr int gridW = 384;
+  constexpr int currentW = 188;
+  constexpr int topH = 100;
+  constexpr int hourlyY = topY + topH;
+  constexpr int hourlyH = 96;
+  constexpr int detailY = hourlyY + hourlyH;
+  constexpr int detailH = 30;
 
-  snprintf(text, sizeof(text), "TIME SOURCE %s", model.ntpSynced ? "NTP+RTC" : "RTC");
-  display.drawText(24, 128, text, true, 1);
+  display.drawRect(gridX, topY, gridW, topH + hourlyH + detailH, true);
+  display.drawFastHLine(gridX, hourlyY, gridW, true);
+  display.drawFastHLine(gridX, detailY, gridW, true);
+  display.drawFastVLine(gridX + currentW, topY, topH, true);
 
-  snprintf(text, sizeof(text), "WIFI %s", model.wifiConnected ? model.wifiIp.c_str() : "OFFLINE");
-  display.drawText(24, 150, text, true, 1);
+  snprintf(text, sizeof(text), "%dC", model.weather.temperature);
+  display.drawText(22, 58, text, true, 5);
 
-  snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : "NO CARD");
-  display.drawText(24, 172, text, true, 1);
+  if (model.weather.dailyCount > 0) {
+    const HubWeatherDaily& today = model.weather.daily[0];
+    display.drawText(120, 56, "MAX", true, 1);
+    snprintf(text, sizeof(text), "%dC", today.temperatureMax);
+    display.drawText(148, 52, text, true, 2);
+    display.drawText(120, 86, "MIN", true, 1);
+    snprintf(text, sizeof(text), "%dC", today.temperatureMin);
+    display.drawText(148, 82, text, true, 2);
+  } else {
+    snprintf(text, sizeof(text), "HUM %d%%", model.weather.humidity);
+    display.drawText(108, 58, text, true, 2);
+  }
 
-  display.drawText(24, 204, "DAY", true, 1);
-  UiDraw::progressBar(display, 72, 201, 292, 14, dayProgressPercent(model.now));
+  drawWeatherIconCentered(display, 20, 104, 42, model.weather.icon, 2);
+  snprintf(text, sizeof(text), "UPD %s", formatWeatherTime(model.weather.updatedAt).c_str());
+  display.drawText(72, 114, text, true, 1);
 
-  display.drawText(24, 232, "BAT", true, 1);
-  UiDraw::progressBar(display, 72, 229, 292, 14, model.battery.percent);
+  constexpr int forecastCols = 3;
+  const int forecastW = (gridW - currentW) / forecastCols;
+  for (int i = 0; i < forecastCols; ++i) {
+    const int x = gridX + currentW + i * forecastW;
+    display.drawFastVLine(x, topY, topH, true);
+    snprintf(text, sizeof(text), "+%d", i + 1);
+    drawCenteredText(display, x, topY + 14, forecastW, text, true, 2);
 
-  display.drawText(24, 270, "KEY SYNC", true, 1);
+    const size_t dailyIndex = static_cast<size_t>(i + 1);
+    if (dailyIndex < model.weather.dailyCount) {
+      const HubWeatherDaily& day = model.weather.daily[dailyIndex];
+      snprintf(text, sizeof(text), "%d/%dC", day.temperatureMax, day.temperatureMin);
+      drawCenteredText(display, x, topY + 48, forecastW, text, true, 1);
+      drawWeatherIconCentered(display, x, topY + 70, forecastW, day.iconDay, 1);
+    } else {
+      drawCenteredText(display, x, topY + 54, forecastW, "--", true, 2);
+    }
+  }
+
+  constexpr int hourlyCols = 8;
+  constexpr int hourlyRows = 2;
+  constexpr int hourlyCellW = gridW / hourlyCols;
+  constexpr int hourlyCellH = hourlyH / hourlyRows;
+  for (int i = 1; i < hourlyCols; ++i) {
+    display.drawFastVLine(gridX + i * hourlyCellW, hourlyY, hourlyH, true);
+  }
+  display.drawFastHLine(gridX, hourlyY + hourlyCellH, gridW, true);
+
+  const size_t hourlyLimit = min(model.weather.hourlyCount, static_cast<size_t>(hourlyCols * hourlyRows));
+  for (size_t i = 0; i < hourlyLimit; ++i) {
+    const HubWeatherHourly& item = model.weather.hourly[i];
+    const int col = static_cast<int>(i % hourlyCols);
+    const int row = static_cast<int>(i / hourlyCols);
+    const int x = gridX + col * hourlyCellW;
+    const int y = hourlyY + row * hourlyCellH;
+    snprintf(text, sizeof(text), "%s", formatWeatherTime(item.time).c_str());
+    drawCenteredText(display, x, y + 5, hourlyCellW, text, true, 1);
+    snprintf(text, sizeof(text), "%dC", item.temperature);
+    drawCenteredText(display, x, y + 21, hourlyCellW, text, true, 1);
+    drawWeatherIconCentered(display, x, y + 32, hourlyCellW, item.icon, 1);
+  }
+
+  snprintf(text, sizeof(text), "HUM %d%%", model.weather.humidity);
+  display.drawText(22, detailY + 12, text, true, 1);
+  if (model.weather.dailyCount > 0) {
+    const HubWeatherDaily& today = model.weather.daily[0];
+    snprintf(text, sizeof(text), "TODAY %s", formatWeatherDate(today.date).c_str());
+    display.drawText(102, detailY + 12, text, true, 1);
+    snprintf(text, sizeof(text), "SUN %s-%s", today.sunrise.c_str(), today.sunset.c_str());
+    display.drawText(204, detailY + 12, text, true, 1);
+  } else {
+    display.drawText(102, detailY + 12, "TODAY --", true, 1);
+  }
+
+  display.drawText(24, 270, "KEY REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }
@@ -321,8 +475,8 @@ void DesktopClockUi::render(const DesktopClockUiModel& model) {
     case DesktopClockPage::Message:
       drawMessagePage(display_, statusBar_, model);
       break;
-    case DesktopClockPage::Dashboard:
-      drawDashboardPage(display_, statusBar_, model);
+    case DesktopClockPage::Weather:
+      drawWeatherPage(display_, statusBar_, model);
       break;
     case DesktopClockPage::System:
       drawSystemPage(display_, statusBar_, model);
