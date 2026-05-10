@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <cstdarg>
 
 #include "BatteryMonitor.h"
 #include "Button.h"
@@ -36,6 +37,7 @@ constexpr uint32_t kEnvironmentPollMs = 30000;
 constexpr uint32_t kRtcPollMs = 1000;
 constexpr uint32_t kWifiRetryMs = 30000;
 constexpr uint32_t kNtpRetryMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kNtpUnsyncedRetryMs = 30000;
 constexpr uint32_t kHubTelemetryMs = 5UL * 60UL * 1000UL;
 constexpr uint32_t kHubMessagePollMs = 60UL * 1000UL;
 constexpr uint32_t kHubSyncIconMinMs = 3000;
@@ -44,6 +46,7 @@ constexpr uint32_t kKeyLongPressMs = 1000;
 constexpr uint32_t kNewMessageBlinkMs = 500;
 constexpr uint8_t kHubMessageLimit = 10;
 constexpr const char* kHubMessageChannel = "desk";
+constexpr size_t kBootLogLines = 12;
 
 BatteryMonitor battery;
 Button bootButton(BoardConfig::ButtonBoot);
@@ -83,6 +86,43 @@ struct AppState {
 };
 
 AppState app;
+bool bootScreenActive = false;
+String bootLogLines[kBootLogLines];
+size_t bootLogCount = 0;
+
+void drawBootLog() {
+  if (!display.isReady()) {
+    return;
+  }
+
+  display.clear(true);
+  display.drawText(10, 10, "TinyPanel boot", true, 2);
+  display.drawFastHLine(10, 32, 380, true);
+
+  const size_t start = bootLogCount > kBootLogLines ? bootLogCount - kBootLogLines : 0;
+  for (size_t i = start; i < bootLogCount; ++i) {
+    const size_t row = i - start;
+    display.drawText(12, 44 + static_cast<int>(row) * 18, bootLogLines[i % kBootLogLines].c_str(), true, 2);
+  }
+
+  display.flushFull();
+}
+
+void bootLog(const char* text) {
+  Serial.println(text);
+  bootLogLines[bootLogCount % kBootLogLines] = text;
+  ++bootLogCount;
+  drawBootLog();
+}
+
+void bootLogf(const char* format, ...) {
+  char buffer[64];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  bootLog(buffer);
+}
 
 String formatRtcTimestamp(const RtcDateTime& dt) {
   if (!dt.valid) {
@@ -197,10 +237,12 @@ bool trySyncTime(bool force = false) {
     }
     return false;
   }
-  if (!force && app.ntpSynced && now - app.lastNtpAttemptMs < kNtpRetryMs) {
-    return true;
+  const uint32_t retryMs = app.ntpSynced ? kNtpRetryMs : kNtpUnsyncedRetryMs;
+  if (!force && now - app.lastNtpAttemptMs < retryMs) {
+    return app.ntpSynced;
   }
-  if (!force && now - app.lastNtpAttemptMs < kNtpRetryMs) {
+
+  if (!force && !wifi.isConnected()) {
     return false;
   }
 
@@ -214,7 +256,7 @@ bool trySyncTime(bool force = false) {
   app.ntpSyncing = true;
   app.ntpSyncFailed = false;
   app.uiDirty = true;
-  if (display.isReady()) {
+  if (display.isReady() && !bootScreenActive) {
     renderUi();
   }
 
@@ -436,7 +478,7 @@ void handleButtons() {
 
 void setup() {
   Serial.begin(115200);
-  delay(1500);
+  delay(500);
 
   Serial.println();
   Serial.println("ESP32-S3 RLCD 4.2 Demo UI");
@@ -446,33 +488,63 @@ void setup() {
   keyButton.begin();
   bootButton.begin();
 
-  i2cScanner.begin(BoardConfig::I2cSda, BoardConfig::I2cScl);
-  i2cScanner.printScan();
-
-  battery.begin();
-  Serial.printf("SHTC3 begin: %s\n", shtc3.begin() ? "ok" : "failed");
-  Serial.printf("RTC begin: %s\n", rtc.begin() ? "ok" : "failed");
-  app.sdMounted = sdCard.begin();
-  sdCard.printInfo(Serial);
-
-  if (APP_HAS_WIFI_SECRETS) {
-    wifi.begin(AppSecrets::WifiSsid, AppSecrets::WifiPassword, 12000);
-  } else {
-    Serial.println("WiFi: create include/AppSecrets.h from AppSecrets.example.h to enable network");
-  }
-  hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, kDeviceId);
-  hub.configureTelemetry(kHubTelemetryMs, kHubSyncIconMinMs);
-  hub.configureMessages(kHubMessageChannel, kHubMessagePollMs, kHubMessageLimit);
-  Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
-
   if (!display.begin()) {
     Serial.println("RLCD init failed");
     return;
   }
 
+  bootScreenActive = true;
+  bootLog("kernel: TinyPanel firmware");
+  bootLogf("psram: %s", psramFound() ? "yes" : "no");
+  bootLogf("flash: %lu KB", static_cast<unsigned long>(ESP.getFlashChipSize() / 1024UL));
+
+  bootLog("i2c: scanning bus");
+  i2cScanner.begin(BoardConfig::I2cSda, BoardConfig::I2cScl);
+  i2cScanner.printScan();
+
+  bootLog("power: init battery adc");
+  battery.begin();
+
+  bootLog("shtc3: probing sensor");
+  const bool shtc3Ok = shtc3.begin();
+  Serial.printf("SHTC3 begin: %s\n", shtc3Ok ? "ok" : "failed");
+  bootLogf("shtc3: %s", shtc3Ok ? "ok" : "failed");
+
+  bootLog("rtc: probing clock");
+  const bool rtcOk = rtc.begin();
+  Serial.printf("RTC begin: %s\n", rtcOk ? "ok" : "failed");
+  bootLogf("rtc: %s", rtcOk ? "ok" : "failed");
+
+  bootLog("sd: mount card");
+  app.sdMounted = sdCard.begin();
+  sdCard.printInfo(Serial);
+  bootLogf("sd: %s", app.sdMounted ? "mounted" : sdCard.lastErrorText());
+
+  if (APP_HAS_WIFI_SECRETS) {
+    bootLog("wifi: connect timeout 12s");
+    const bool wifiOk = wifi.begin(AppSecrets::WifiSsid, AppSecrets::WifiPassword, 12000);
+    bootLogf("wifi: %s", wifiOk ? wifi.ipAddress().c_str() : "failed");
+  } else {
+    Serial.println("WiFi: create include/AppSecrets.h from AppSecrets.example.h to enable network");
+    bootLog("wifi: not configured");
+  }
+
+  bootLog("hub: configure client");
+  hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, kDeviceId);
+  hub.configureTelemetry(kHubTelemetryMs, kHubSyncIconMinMs);
+  hub.configureMessages(kHubMessageChannel, kHubMessagePollMs, kHubMessageLimit);
+  Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
+  bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
+
+  bootLog("sensors: first read");
   readSensors(true);
+  bootLog("ntp: sync timeout 12s");
   trySyncTime(true);
+  bootLogf("ntp: %s", app.ntpSynced ? "synced" : "failed");
   app.bootId = makeBootId(app.now);
+
+  bootLog("ui: start desktop");
+  bootScreenActive = false;
   renderUi();
   syncHubTelemetry(true);
   pollHubMessages(true);
