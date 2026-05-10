@@ -40,7 +40,7 @@ int dayProgressPercent(const RtcDateTime& dt) {
 
 void drawPageDots(RlcdDisplay& display, DesktopClockPage page) {
   const int y = 283;
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < kDesktopClockPageCount; ++i) {
     int x = 176 + i * 16;
     bool active = static_cast<int>(page) == i;
     if (active) {
@@ -335,5 +335,5 @@ void DesktopClockUi::render(const DesktopClockUiModel& model) {
 }
 
 DesktopClockPage DesktopClockUi::nextPage(DesktopClockPage page) {
-  return static_cast<DesktopClockPage>((static_cast<int>(page) + 1) % 4);
+  return static_cast<DesktopClockPage>((static_cast<int>(page) + 1) % kDesktopClockPageCount);
 }

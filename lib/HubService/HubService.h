@@ -74,6 +74,7 @@ public:
                                 HubStateChangedCallback onStateChanged = nullptr,
                                 uint32_t nowMs = millis());
   size_t messageCount() const;
+  const HubMessage* messages() const;
   const HubMessage* messageAt(size_t index) const;
 
 private:

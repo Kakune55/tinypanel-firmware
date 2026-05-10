@@ -37,6 +37,7 @@ private:
   void sendData(uint8_t data);
   void sendBuffer(const uint8_t* data, int len);
   void initPanel();
+  void releaseBuffer();
   void setResetLevel(bool high);
   void drawChar(int x, int y, char c, bool black, int scale);
   void drawCircleHelper(int x0, int y0, int r, uint8_t cornerMask, bool black);

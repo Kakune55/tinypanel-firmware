@@ -52,6 +52,7 @@ bool RlcdDisplay::begin() {
   esp_err_t err = spi_bus_initialize(kSpiHost, &busConfig, SPI_DMA_CH_AUTO);
   if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
     Serial.printf("RlcdDisplay: spi_bus_initialize failed: 0x%X\n", err);
+    releaseBuffer();
     return false;
   }
 
@@ -67,6 +68,7 @@ bool RlcdDisplay::begin() {
   err = esp_lcd_new_panel_io_spi(reinterpret_cast<esp_lcd_spi_bus_handle_t>(kSpiHost), &ioConfig, &g_ioHandle);
   if (err != ESP_OK) {
     Serial.printf("RlcdDisplay: esp_lcd_new_panel_io_spi failed: 0x%X\n", err);
+    releaseBuffer();
     return false;
   }
 
@@ -520,6 +522,16 @@ void RlcdDisplay::initPanel() {
 
   clear(true);
   flushFull();
+}
+
+void RlcdDisplay::releaseBuffer() {
+  if (buffer_ == nullptr) {
+    return;
+  }
+
+  heap_caps_free(buffer_);
+  buffer_ = nullptr;
+  bufferLen_ = 0;
 }
 
 void RlcdDisplay::setResetLevel(bool high) {

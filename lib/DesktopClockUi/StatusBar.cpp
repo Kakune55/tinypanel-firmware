@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include "DesktopClockUi.h"
+#include "DesktopClockTypes.h"
 #include "PixelIcons.h"
 #include "UiDraw.h"
 

@@ -108,6 +108,10 @@ size_t HubService::messageCount() const {
   return messageCount_;
 }
 
+const HubMessage* HubService::messages() const {
+  return messageCount_ > 0 ? messages_ : nullptr;
+}
+
 const HubMessage* HubService::messageAt(size_t index) const {
   return index < messageCount_ ? &messages_[index] : nullptr;
 }
