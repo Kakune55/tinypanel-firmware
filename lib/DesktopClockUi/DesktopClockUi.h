@@ -1,0 +1,46 @@
+#pragma once
+
+#include <Arduino.h>
+
+#include "BatteryMonitor.h"
+#include "RlcdDisplay.h"
+#include "RtcClock.h"
+#include "StatusBar.h"
+#include "Shtc3Sensor.h"
+
+enum class DesktopClockPage {
+  Clock,
+  Dashboard,
+  System,
+};
+
+struct DesktopClockUiModel {
+  DesktopClockPage page = DesktopClockPage::Clock;
+  BatteryStatus battery;
+  Shtc3Reading environment;
+  RtcDateTime now;
+  bool ntpSynced = false;
+  bool ntpSyncing = false;
+  bool ntpSyncFailed = false;
+  bool sdMounted = false;
+  const char* sdStatus = "NO CARD";
+  bool wifiConnected = false;
+  int wifiRssi = 0;
+  String wifiIp;
+  String wifiSsid;
+  uint32_t uptimeMs = 0;
+  uint32_t freeHeap = 0;
+  uint32_t freePsram = 0;
+};
+
+class DesktopClockUi {
+ public:
+  explicit DesktopClockUi(RlcdDisplay& display);
+
+  void render(const DesktopClockUiModel& model);
+  static DesktopClockPage nextPage(DesktopClockPage page);
+
+ private:
+  RlcdDisplay& display_;
+  StatusBar statusBar_;
+};
