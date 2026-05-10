@@ -156,7 +156,7 @@ void drawClockPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCloc
   display.drawText(280, 194, "BATTERY", true, 1);
   UiDraw::progressBar(display, 282, 216, 74, 12, model.battery.percent);
   snprintf(text, sizeof(text), "%d%%", model.battery.percent);
-  display.drawText(362, 218, text, true, 1);
+  display.drawText(322, 238, text, true, 1);
   snprintf(text, sizeof(text), "%.2fV", model.battery.voltage);
   display.drawText(282, 238, text, true, 1);
 
@@ -294,6 +294,21 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   drawPageDots(display, model.page);
 }
 
+void drawNewMessageModal(RlcdDisplay& display, bool invert) {
+  constexpr int x = 92;
+  constexpr int y = 94;
+  constexpr int w = 216;
+  constexpr int h = 108;
+  const bool bg = invert;
+  const bool ink = !invert;
+
+  display.fillRect(x, y, w, h, bg);
+  display.drawRect(x, y, w, h, ink);
+  display.drawRect(x + 2, y + 2, w - 4, h - 4, ink);
+  display.drawText(x + 22, y + 20, "New Msg!", ink, 4);
+  display.drawText(x + 20, y + 68, "KEY OPEN", ink, 2);
+}
+
 }  // namespace
 
 DesktopClockUi::DesktopClockUi(RlcdDisplay& display) : display_(display), statusBar_(display) {}
@@ -312,6 +327,9 @@ void DesktopClockUi::render(const DesktopClockUiModel& model) {
     case DesktopClockPage::System:
       drawSystemPage(display_, statusBar_, model);
       break;
+  }
+  if (model.newMessageAlert) {
+    drawNewMessageModal(display_, model.newMessageAlertInvert);
   }
   display_.flushFull();
 }

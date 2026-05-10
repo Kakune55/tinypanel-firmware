@@ -35,6 +35,8 @@ struct DesktopClockUiModel {
   uint32_t uptimeMs = 0;
   uint32_t freeHeap = 0;
   uint32_t freePsram = 0;
+  bool newMessageAlert = false;
+  bool newMessageAlertInvert = false;
   const HubMessage* messages = nullptr;
   size_t messageCount = 0;
   size_t selectedMessage = 0;

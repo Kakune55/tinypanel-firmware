@@ -41,6 +41,7 @@ constexpr uint32_t kHubMessagePollMs = 60UL * 1000UL;
 constexpr uint32_t kHubSyncIconMinMs = 3000;
 constexpr uint32_t kKeyDoubleClickMs = 350;
 constexpr uint32_t kKeyLongPressMs = 1000;
+constexpr uint32_t kNewMessageBlinkMs = 500;
 constexpr uint8_t kHubMessageLimit = 10;
 constexpr const char* kHubMessageChannel = "desk";
 
@@ -77,6 +78,7 @@ struct AppState {
   size_t selectedMessage = 0;
   uint16_t messageBodyScrollLine = 0;
   bool messageBodyFocused = false;
+  bool newMessageAlert = false;
   String bootId;
 };
 
@@ -138,6 +140,8 @@ DesktopClockUiModel buildUiModel() {
   model.uptimeMs = millis();
   model.freeHeap = ESP.getFreeHeap();
   model.freePsram = ESP.getFreePsram();
+  model.newMessageAlert = app.newMessageAlert;
+  model.newMessageAlertInvert = app.newMessageAlert && ((millis() / kNewMessageBlinkMs) % 2 == 1);
   model.messages = hub.messageAt(0);
   model.messageCount = hub.messageCount();
   model.selectedMessage = app.selectedMessage;
@@ -277,6 +281,9 @@ void pollHubMessages(bool force = false) {
   if (hub.messageCount() != before) {
     app.selectedMessage = 0;
     app.messageBodyScrollLine = 0;
+    if (app.page != DesktopClockPage::Message) {
+      app.newMessageAlert = true;
+    }
   }
   app.uiDirty = true;
 }
@@ -329,6 +336,17 @@ void handleMessageKeyClick() {
 }
 
 void handleSingleKeyClick() {
+  if (app.newMessageAlert) {
+    app.newMessageAlert = false;
+    app.page = DesktopClockPage::Message;
+    app.messageBodyFocused = false;
+    app.selectedMessage = 0;
+    app.messageBodyScrollLine = 0;
+    app.uiDirty = true;
+    Serial.println("KEY: open new message");
+    return;
+  }
+
   if (app.page == DesktopClockPage::Message) {
     handleMessageKeyClick();
     return;
@@ -391,6 +409,9 @@ void handleButtons() {
       syncHubTelemetry(true);
       pollHubMessages(true);
       app.uiDirty = true;
+    } else if (app.newMessageAlert) {
+      app.pendingKeyClick = false;
+      handleSingleKeyClick();
     } else if (app.pendingKeyClick && now - app.pendingKeyClickMs < kKeyDoubleClickMs) {
       app.pendingKeyClick = false;
       handleKeyDoubleClick();
@@ -402,6 +423,9 @@ void handleButtons() {
 
   if (bootButton.consumeReleased()) {
     app.page = DesktopClockUi::nextPage(app.page);
+    if (app.page == DesktopClockPage::Message) {
+      app.newMessageAlert = false;
+    }
     app.pendingKeyClick = false;
     app.uiDirty = true;
     Serial.println("BOOT: page switched");
@@ -464,6 +488,14 @@ void loop() {
   pollHubMessages(false);
   if (hub.update()) {
     app.uiDirty = true;
+  }
+  if (app.newMessageAlert) {
+    static uint32_t lastAlertBlinkMs = 0;
+    const uint32_t now = millis();
+    if (now - lastAlertBlinkMs >= kNewMessageBlinkMs) {
+      lastAlertBlinkMs = now;
+      app.uiDirty = true;
+    }
   }
 
   if (app.uiDirty) {
