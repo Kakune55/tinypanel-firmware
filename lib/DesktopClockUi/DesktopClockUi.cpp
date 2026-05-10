@@ -10,6 +10,10 @@ const char* weekdayName(uint8_t weekday) {
   return weekday < 7 ? kNames[weekday] : "---";
 }
 
+const char* messageTitle(const HubMessage& message) {
+  return message.author.length() > 0 ? message.author.c_str() : "anonymous";
+}
+
 void formatDate(char* out, size_t len, const RtcDateTime& dt) {
   if (!dt.valid) {
     snprintf(out, len, "RTC NOT SET");
@@ -36,14 +40,77 @@ int dayProgressPercent(const RtcDateTime& dt) {
 
 void drawPageDots(RlcdDisplay& display, DesktopClockPage page) {
   const int y = 283;
-  for (int i = 0; i < 3; ++i) {
-    int x = 184 + i * 16;
+  for (int i = 0; i < 4; ++i) {
+    int x = 176 + i * 16;
     bool active = static_cast<int>(page) == i;
     if (active) {
       display.fillCircle(x, y, 4, true);
     } else {
       display.drawCircle(x, y, 4, true);
     }
+  }
+}
+
+void drawClippedText(RlcdDisplay& display, int x, int y, const String& text, int maxChars, bool black = true, int scale = 1) {
+  char buffer[48];
+  const int limit = min(maxChars, static_cast<int>(sizeof(buffer) - 1));
+  int out = 0;
+  for (int i = 0; i < static_cast<int>(text.length()) && out < limit; ++i) {
+    const char c = text[i];
+    buffer[out++] = (c == '\n' || c == '\r') ? ' ' : c;
+  }
+  buffer[out] = '\0';
+  display.drawText(x, y, buffer, black, scale);
+}
+
+String formatMessageTimestamp(const String& value) {
+  if (value.length() >= 19 && value[10] == 'T') {
+    return value.substring(0, 10) + " " + value.substring(11, 19);
+  }
+  return value;
+}
+
+void drawWrappedText(RlcdDisplay& display,
+                     int x,
+                     int y,
+                     int maxCharsPerLine,
+                     int maxLines,
+                     const String& text,
+                     uint16_t scrollLine,
+                     bool black = true,
+                     int scale = 1,
+                     int lineHeight = 14) {
+  char line[40];
+  int lineLen = 0;
+  uint16_t logicalLine = 0;
+  int drawnLines = 0;
+
+  auto flushLine = [&]() {
+    if (logicalLine >= scrollLine && drawnLines < maxLines) {
+      line[lineLen] = '\0';
+      display.drawText(x, y + drawnLines * lineHeight, line, black, scale);
+      ++drawnLines;
+    }
+    ++logicalLine;
+    lineLen = 0;
+  };
+
+  for (size_t i = 0; i < text.length() && drawnLines < maxLines; ++i) {
+    const char c = text[i];
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      flushLine();
+      continue;
+    }
+    line[lineLen++] = c;
+    if (lineLen >= maxCharsPerLine || lineLen >= static_cast<int>(sizeof(line) - 1)) {
+      flushLine();
+    }
+  }
+  if (lineLen > 0 && drawnLines < maxLines) {
+    flushLine();
   }
 }
 
@@ -132,6 +199,62 @@ void drawDashboardPage(RlcdDisplay& display, StatusBar& statusBar, const Desktop
   drawPageDots(display, model.page);
 }
 
+void drawMessagePage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
+  display.clear(true);
+  statusBar.draw(model);
+
+  constexpr int topY = 38;
+  constexpr int bottomY = 262;
+  constexpr int splitX = 142;
+  constexpr int listX = 10;
+  constexpr int listW = 124;
+  constexpr int bodyX = 154;
+  constexpr int bodyW = 236;
+
+  display.drawFastVLine(splitX, topY, bottomY - topY, true);
+  if (!model.messageBodyFocused) {
+    display.drawFastHLine(listX, topY, listW, true);
+    display.drawFastHLine(listX, topY + 2, listW, true);
+  } else {
+    display.drawFastHLine(bodyX, topY, bodyW, true);
+    display.drawFastHLine(bodyX, topY + 2, bodyW, true);
+  }
+
+  if (!model.messages || model.messageCount == 0) {
+    display.drawText(listX + 8, topY + 24, "NO MSG", true, 1);
+    display.drawText(bodyX + 8, topY + 24, "No messages", true, 1);
+    display.drawText(24, 270, "KEY SELECT", true, 1);
+    display.drawText(250, 270, "DBL FOCUS", true, 1);
+    drawPageDots(display, model.page);
+    return;
+  }
+
+  const size_t selected = min(model.selectedMessage, model.messageCount - 1);
+  constexpr int itemY = topY + 14;
+  constexpr int itemH = 30;
+  for (size_t i = 0; i < model.messageCount && i < 7; ++i) {
+    const int y = itemY + static_cast<int>(i) * itemH;
+    const bool active = i == selected;
+    if (active) {
+      display.fillRect(listX, y, listW, itemH - 3, true);
+    }
+
+    char idText[12];
+    snprintf(idText, sizeof(idText), "#%d", model.messages[i].id);
+    display.drawText(listX + 4, y + 4, idText, !active, 1);
+    drawClippedText(display, listX + 38, y + 4, messageTitle(model.messages[i]), 12, !active, 1);
+    drawClippedText(display, listX + 4, y + 17, model.messages[i].body, 18, !active, 1);
+  }
+
+  const HubMessage& message = model.messages[selected];
+  drawClippedText(display, bodyX, topY + 12, formatMessageTimestamp(message.createdAt), 19, true, 1);
+  drawWrappedText(display, bodyX, topY + 30, 19, 9, message.body, model.messageBodyScrollLine, true, 2, 21);
+
+  display.drawText(24, 270, model.messageBodyFocused ? "KEY PAGE" : "KEY SELECT", true, 1);
+  display.drawText(250, 270, "DBL FOCUS", true, 1);
+  drawPageDots(display, model.page);
+}
+
 void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
   char text[48];
 
@@ -180,6 +303,9 @@ void DesktopClockUi::render(const DesktopClockUiModel& model) {
     case DesktopClockPage::Clock:
       drawClockPage(display_, statusBar_, model);
       break;
+    case DesktopClockPage::Message:
+      drawMessagePage(display_, statusBar_, model);
+      break;
     case DesktopClockPage::Dashboard:
       drawDashboardPage(display_, statusBar_, model);
       break;
@@ -191,5 +317,5 @@ void DesktopClockUi::render(const DesktopClockUiModel& model) {
 }
 
 DesktopClockPage DesktopClockUi::nextPage(DesktopClockPage page) {
-  return static_cast<DesktopClockPage>((static_cast<int>(page) + 1) % 3);
+  return static_cast<DesktopClockPage>((static_cast<int>(page) + 1) % 4);
 }

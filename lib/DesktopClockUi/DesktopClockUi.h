@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "BatteryMonitor.h"
+#include "HubService.h"
 #include "RlcdDisplay.h"
 #include "RtcClock.h"
 #include "StatusBar.h"
@@ -10,6 +11,7 @@
 
 enum class DesktopClockPage {
   Clock,
+  Message,
   Dashboard,
   System,
 };
@@ -33,6 +35,11 @@ struct DesktopClockUiModel {
   uint32_t uptimeMs = 0;
   uint32_t freeHeap = 0;
   uint32_t freePsram = 0;
+  const HubMessage* messages = nullptr;
+  size_t messageCount = 0;
+  size_t selectedMessage = 0;
+  bool messageBodyFocused = false;
+  uint16_t messageBodyScrollLine = 0;
 };
 
 class DesktopClockUi {

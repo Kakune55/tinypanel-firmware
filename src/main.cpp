@@ -36,6 +36,13 @@ constexpr uint32_t kEnvironmentPollMs = 30000;
 constexpr uint32_t kRtcPollMs = 1000;
 constexpr uint32_t kWifiRetryMs = 30000;
 constexpr uint32_t kNtpRetryMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kHubTelemetryMs = 5UL * 60UL * 1000UL;
+constexpr uint32_t kHubMessagePollMs = 60UL * 1000UL;
+constexpr uint32_t kHubSyncIconMinMs = 3000;
+constexpr uint32_t kKeyDoubleClickMs = 350;
+constexpr uint32_t kKeyLongPressMs = 1000;
+constexpr uint8_t kHubMessageLimit = 10;
+constexpr const char* kHubMessageChannel = "desk";
 
 BatteryMonitor battery;
 Button bootButton(BoardConfig::ButtonBoot);
@@ -65,6 +72,11 @@ struct AppState {
   uint32_t lastRtcMs = 0;
   uint32_t lastWifiRetryMs = 0;
   uint32_t lastNtpAttemptMs = 0;
+  uint32_t pendingKeyClickMs = 0;
+  bool pendingKeyClick = false;
+  size_t selectedMessage = 0;
+  uint16_t messageBodyScrollLine = 0;
+  bool messageBodyFocused = false;
   String bootId;
 };
 
@@ -126,6 +138,11 @@ DesktopClockUiModel buildUiModel() {
   model.uptimeMs = millis();
   model.freeHeap = ESP.getFreeHeap();
   model.freePsram = ESP.getFreePsram();
+  model.messages = hub.messageAt(0);
+  model.messageCount = hub.messageCount();
+  model.selectedMessage = app.selectedMessage;
+  model.messageBodyFocused = app.messageBodyFocused;
+  model.messageBodyScrollLine = app.messageBodyScrollLine;
   return model;
 }
 
@@ -250,30 +267,142 @@ void syncHubTelemetry(bool force = false) {
   }
 }
 
+void pollHubMessages(bool force = false) {
+  const size_t before = hub.messageCount();
+  const HubRequestResult result = hub.pollMessages(force, wifi.isConnected(), renderHubState);
+  if (!result.attempted) {
+    return;
+  }
+
+  if (hub.messageCount() != before) {
+    app.selectedMessage = 0;
+    app.messageBodyScrollLine = 0;
+  }
+  app.uiDirty = true;
+}
+
+uint16_t messageBodyLineCount(const String& text) {
+  constexpr uint16_t kCharsPerLine = 19;
+  uint16_t lines = 1;
+  uint16_t col = 0;
+  for (size_t i = 0; i < text.length(); ++i) {
+    const char c = text[i];
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      ++lines;
+      col = 0;
+      continue;
+    }
+    ++col;
+    if (col >= kCharsPerLine) {
+      ++lines;
+      col = 0;
+    }
+  }
+  return lines;
+}
+
+void handleMessageKeyClick() {
+  const size_t count = hub.messageCount();
+  if (count == 0) {
+    return;
+  }
+
+  if (!app.messageBodyFocused) {
+    app.selectedMessage = (app.selectedMessage + 1) % count;
+    app.messageBodyScrollLine = 0;
+    app.uiDirty = true;
+    return;
+  }
+
+  const HubMessage* message = hub.messageAt(app.selectedMessage);
+  const uint16_t lineCount = message ? messageBodyLineCount(message->body) : 1;
+  constexpr uint16_t kPageLines = 9;
+  if (lineCount <= kPageLines || app.messageBodyScrollLine + kPageLines >= lineCount) {
+    app.messageBodyScrollLine = 0;
+  } else {
+    app.messageBodyScrollLine += kPageLines;
+  }
+  app.uiDirty = true;
+}
+
+void handleSingleKeyClick() {
+  if (app.page == DesktopClockPage::Message) {
+    handleMessageKeyClick();
+    return;
+  }
+
+  Serial.println("KEY: manual refresh");
+  if (!sdCard.isMounted()) {
+    app.sdMounted = sdCard.begin();
+    sdCard.printInfo(Serial);
+  }
+  readSensors(true);
+  pollHubMessages(true);
+  app.uiDirty = true;
+}
+
+void handleKeyDoubleClick() {
+  if (app.page != DesktopClockPage::Message) {
+    handleSingleKeyClick();
+    return;
+  }
+
+  app.messageBodyFocused = !app.messageBodyFocused;
+  app.uiDirty = true;
+  Serial.println(app.messageBodyFocused ? "KEY: message body focus" : "KEY: message list focus");
+}
+
+void handlePendingKeyClick() {
+  if (!app.pendingKeyClick) {
+    return;
+  }
+  if (millis() - app.pendingKeyClickMs < kKeyDoubleClickMs) {
+    return;
+  }
+
+  app.pendingKeyClick = false;
+  handleSingleKeyClick();
+}
+
 void handleButtons() {
   keyButton.update();
   bootButton.update();
 
   if (keyButton.consumeReleased()) {
-    bool longPress = keyButton.lastPressDurationMs() >= 1000;
-    Serial.println(longPress ? "KEY: force network sync" : "KEY: manual refresh");
-    if (!sdCard.isMounted()) {
-      app.sdMounted = sdCard.begin();
-      sdCard.printInfo(Serial);
+    const uint32_t now = millis();
+    bool longPress = keyButton.lastPressDurationMs() >= kKeyLongPressMs;
+    if (longPress) {
+      app.pendingKeyClick = false;
+      Serial.println("KEY: force network sync");
+      if (!sdCard.isMounted()) {
+        app.sdMounted = sdCard.begin();
+        sdCard.printInfo(Serial);
+      }
+      readSensors(true);
     }
-    readSensors(true);
     if (longPress && !wifi.isConnected() && APP_HAS_WIFI_SECRETS) {
       wifi.connect(8000);
     }
     if (longPress) {
       trySyncTime(true);
       syncHubTelemetry(true);
+      pollHubMessages(true);
+      app.uiDirty = true;
+    } else if (app.pendingKeyClick && now - app.pendingKeyClickMs < kKeyDoubleClickMs) {
+      app.pendingKeyClick = false;
+      handleKeyDoubleClick();
+    } else {
+      app.pendingKeyClick = true;
+      app.pendingKeyClickMs = now;
     }
-    app.uiDirty = true;
   }
 
   if (bootButton.consumeReleased()) {
     app.page = DesktopClockUi::nextPage(app.page);
+    app.pendingKeyClick = false;
     app.uiDirty = true;
     Serial.println("BOOT: page switched");
   }
@@ -308,6 +437,8 @@ void setup() {
     Serial.println("WiFi: create include/AppSecrets.h from AppSecrets.example.h to enable network");
   }
   hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, kDeviceId);
+  hub.configureTelemetry(kHubTelemetryMs, kHubSyncIconMinMs);
+  hub.configureMessages(kHubMessageChannel, kHubMessagePollMs, kHubMessageLimit);
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
 
   if (!display.begin()) {
@@ -320,14 +451,17 @@ void setup() {
   app.bootId = makeBootId(app.now);
   renderUi();
   syncHubTelemetry(true);
+  pollHubMessages(true);
 }
 
 void loop() {
   handleButtons();
+  handlePendingKeyClick();
   handleWifi();
   trySyncTime(false);
   readSensors(false);
   syncHubTelemetry(false);
+  pollHubMessages(false);
   if (hub.update()) {
     app.uiDirty = true;
   }

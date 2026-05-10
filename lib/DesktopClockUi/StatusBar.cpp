@@ -12,6 +12,8 @@ const char* pageName(DesktopClockPage page) {
   switch (page) {
     case DesktopClockPage::Clock:
       return "CLOCK";
+    case DesktopClockPage::Message:
+      return "MESSAGE";
     case DesktopClockPage::Dashboard:
       return "DASH";
     case DesktopClockPage::System:
