@@ -283,7 +283,7 @@ HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {
   snapshot.uptimeS = millis() / 1000UL;
 
   snapshot.battery = state_.battery;
-  snapshot.usbConnected = false;
+  snapshot.usbConnected = state_.battery.charging;
 
   snapshot.environment = state_.environment;
 

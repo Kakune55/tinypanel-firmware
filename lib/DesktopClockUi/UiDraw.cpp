@@ -58,6 +58,11 @@ void batteryIcon(RlcdDisplay& display, int x, int y, const BatteryStatus& status
     return;
   }
 
+  if (status.charging) {
+    bitmapScaled(display, x, y, PixelIcons::BatteryCharging, scale, black);
+    return;
+  }
+
   if (status.critical) {
     bitmapScaled(display, x, y, PixelIcons::BatteryError, scale, black);
     return;
