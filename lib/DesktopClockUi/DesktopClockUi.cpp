@@ -19,6 +19,28 @@ const char* messageTitle(const HubMessage& message) {
   return message.author.length() > 0 ? message.author.c_str() : "anonymous";
 }
 
+const char* todoStatusLabel(int status) {
+  switch (status) {
+    case 1:
+      return "DOING";
+    case 2:
+      return "DONE";
+    default:
+      return "TODO";
+  }
+}
+
+const char* todoStatusGlyph(int status) {
+  switch (status) {
+    case 1:
+      return ">";
+    case 2:
+      return "X";
+    default:
+      return " ";
+  }
+}
+
 void formatDate(char* out, size_t len, const RtcDateTime& dt) {
   if (!dt.valid) {
     snprintf(out, len, "RTC NOT SET");
@@ -181,7 +203,6 @@ void drawClockPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCloc
   display.drawText(300, 212, tempText, true, 2);
   display.drawText(300, 236, humText, true, 1);
 
-  display.drawText(24, 270, "KEY REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }
@@ -252,8 +273,6 @@ void drawWeatherPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
   if (!model.weather.valid) {
     display.drawRect(12, 44, 376, 214, true);
     display.drawText(34, 112, model.wifiConnected ? "Weather pending" : "Weather offline", true, 2);
-    display.drawText(34, 144, "KEY REFRESH", true, 1);
-    display.drawText(24, 270, "KEY REFRESH", true, 1);
     display.drawText(286, 270, "BOOT NEXT", true, 1);
     drawPageDots(display, model.page);
     return;
@@ -348,7 +367,6 @@ void drawWeatherPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
     display.drawText(102, detailY + 12, "TODAY --", true, 1);
   }
 
-  display.drawText(24, 270, "KEY REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }
@@ -409,6 +427,51 @@ void drawMessagePage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
   drawPageDots(display, model.page);
 }
 
+void drawTodoPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
+  display.clear(true);
+  statusBar.draw(model);
+
+  constexpr int x = 6;
+  constexpr int y = 38;
+  constexpr int w = 388;
+  constexpr int itemH = 30;
+
+  if (!model.todos || model.todoCount == 0) {
+    display.drawText(x + 18, y + 78, model.wifiConnected ? "No TODO items" : "TODO offline", true, 2);
+    display.drawText(24, 270, "KEY SELECT", true, 1);
+    display.drawText(132, 270, "DBL STATUS", true, 1);
+    display.drawText(270, 270, "HOLD DEL", true, 1);
+    drawPageDots(display, model.page);
+    return;
+  }
+
+  const size_t selected = min(model.selectedTodo, model.todoCount - 1);
+  const size_t visible = min(model.todoCount, static_cast<size_t>(7));
+  size_t start = 0;
+  if (selected >= visible) {
+    start = selected - visible + 1;
+  }
+
+  for (size_t row = 0; row < visible && start + row < model.todoCount; ++row) {
+    const size_t index = start + row;
+    const HubTodo& todo = model.todos[index];
+    const int itemY = y + static_cast<int>(row) * itemH;
+    const bool active = index == selected;
+    if (active) {
+      display.fillRect(x, itemY - 2, w, itemH - 2, true);
+    }
+
+    display.drawRect(x + 6, itemY + 6, 12, 12, !active);
+    display.drawText(x + 9, itemY + 9, todoStatusGlyph(todo.status), !active, 1);
+    drawClippedText(display, x + 28, itemY + 2, todo.text, 30, !active, 2);
+  }
+
+  display.drawText(24, 270, "KEY SELECT", true, 1);
+  display.drawText(132, 270, "DBL STATUS", true, 1);
+  display.drawText(270, 270, "HOLD DEL", true, 1);
+  drawPageDots(display, model.page);
+}
+
 void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
   char text[48];
 
@@ -443,7 +506,7 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     display.drawText(24, 252, text, true, 1);
   }
 
-  display.drawText(24, 270, "KEY SYNC", true, 1);
+  display.drawText(24, 270, "KEY REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }
@@ -474,6 +537,9 @@ void DesktopClockUi::render(const DesktopClockUiModel& model) {
       break;
     case DesktopClockPage::Message:
       drawMessagePage(display_, statusBar_, model);
+      break;
+    case DesktopClockPage::Todo:
+      drawTodoPage(display_, statusBar_, model);
       break;
     case DesktopClockPage::Weather:
       drawWeatherPage(display_, statusBar_, model);

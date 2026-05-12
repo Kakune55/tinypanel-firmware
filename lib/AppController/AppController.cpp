@@ -51,20 +51,14 @@ bool AppController::ntpSynced() const {
 }
 
 void AppController::readSensors(bool force) {
+  state_.battery = battery_.readStatus();
+  shtc3_.read(state_.environment);
+  readRtc(force);
+  markUiDirty();
+}
+
+void AppController::readRtc(bool force) {
   const uint32_t now = millis();
-
-  if (force || now - state_.lastBatteryMs >= config_.batteryPollMs) {
-    state_.battery = battery_.readStatus();
-    state_.lastBatteryMs = now;
-    markUiDirty();
-  }
-
-  if (force || now - state_.lastEnvironmentMs >= config_.environmentPollMs) {
-    shtc3_.read(state_.environment);
-    state_.lastEnvironmentMs = now;
-    markUiDirty();
-  }
-
   if (force || now - state_.lastRtcMs >= config_.rtcPollMs) {
     RtcDateTime dt;
     rtc_.read(dt);
@@ -154,15 +148,25 @@ void AppController::pollWeather(bool force) {
   }
 }
 
+void AppController::pollTodos(bool force) {
+  const HubRequestResult result = hub_.pollTodos(force, wifi_.isConnected(), handleHubStateChanged);
+  if (result.attempted) {
+    const size_t count = hub_.todoCount();
+    if (count == 0) {
+      state_.selectedTodo = 0;
+    } else if (state_.selectedTodo >= count) {
+      state_.selectedTodo = count - 1;
+    }
+    markUiDirty();
+  }
+}
+
 void AppController::loopOnce() {
   handleButtons();
   handlePendingKeyClick();
   handleWifi();
-  trySyncTime(false);
-  readSensors(false);
-  syncHubTelemetry(false);
-  pollHubMessages(false);
-  pollWeather(false);
+  readRtc(false);
+  runScheduledTasks(false);
 
   if (hub_.update()) {
     markUiDirty();
@@ -254,6 +258,9 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.selectedMessage = state_.selectedMessage;
   model.messageBodyFocused = state_.messageBodyFocused;
   model.messageBodyScrollLine = state_.messageBodyScrollLine;
+  model.todos = hub_.todos();
+  model.todoCount = hub_.todoCount();
+  model.selectedTodo = state_.selectedTodo;
   return model;
 }
 
@@ -273,6 +280,50 @@ void AppController::handleWifi() {
   wifi_.connect(5000);
   state_.lastWifiRetryMs = now;
   markUiDirty();
+}
+
+void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
+  const uint32_t now = millis();
+  if (!force && state_.lastHubSyncWindowMs == 0) {
+    state_.lastHubSyncWindowMs = now;
+    return;
+  }
+  if (!force && state_.lastHubSyncWindowMs != 0 && now - state_.lastHubSyncWindowMs < config_.hubSyncWindowMs) {
+    return;
+  }
+
+  state_.lastHubSyncWindowMs = now;
+  trySyncTime(false);
+  readSensors(true);
+  pollHubMessages(force);
+  HubRequestResult todoSync = hub_.syncTodoChanges(wifi_.isConnected(), handleHubStateChanged);
+  if (todoSync.attempted) {
+    const size_t count = hub_.todoCount();
+    if (count == 0) {
+      state_.selectedTodo = 0;
+    } else if (state_.selectedTodo >= count) {
+      state_.selectedTodo = count - 1;
+    }
+    markUiDirty();
+  }
+  if (!todoSync.attempted || todoSync.ok) {
+    pollTodos(force);
+  }
+  pollWeather(force);
+
+  const uint8_t telemetryWindows = config_.telemetryEveryHubSyncWindows;
+  bool telemetryDue = includeTelemetry;
+  if (!telemetryDue && telemetryWindows > 0) {
+    ++state_.hubSyncWindowCount;
+    if (state_.hubSyncWindowCount >= telemetryWindows) {
+      state_.hubSyncWindowCount = 0;
+      telemetryDue = true;
+    }
+  }
+
+  if (telemetryDue) {
+    syncHubTelemetry(true);
+  }
 }
 
 HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {
@@ -349,6 +400,45 @@ void AppController::handleMessageKeyClick() {
   markUiDirty();
 }
 
+void AppController::handleTodoKeyClick() {
+  const size_t count = hub_.todoCount();
+  if (count == 0) {
+    return;
+  }
+
+  state_.selectedTodo = (state_.selectedTodo + 1) % count;
+  markUiDirty();
+}
+
+void AppController::handleTodoStatusToggle() {
+  const HubTodo* todo = hub_.todoAt(state_.selectedTodo);
+  if (!todo) {
+    return;
+  }
+
+  const int nextStatus = (todo->status + 1) % 3;
+  if (hub_.setTodoStatusLocal(state_.selectedTodo, nextStatus)) {
+    markUiDirty();
+  }
+}
+
+void AppController::handleTodoDelete() {
+  const HubTodo* todo = hub_.todoAt(state_.selectedTodo);
+  if (!todo) {
+    return;
+  }
+
+  if (hub_.deleteTodoLocal(state_.selectedTodo)) {
+    const size_t count = hub_.todoCount();
+    if (count == 0) {
+      state_.selectedTodo = 0;
+    } else if (state_.selectedTodo >= count) {
+      state_.selectedTodo = count - 1;
+    }
+    markUiDirty();
+  }
+}
+
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
@@ -366,20 +456,38 @@ void AppController::handleSingleKeyClick() {
     return;
   }
 
+  if (state_.page == DesktopClockPage::Todo) {
+    handleTodoKeyClick();
+    return;
+  }
+
+  if (state_.page != DesktopClockPage::System) {
+    Serial.println("KEY: no action on this page");
+    return;
+  }
+
   Serial.println("KEY: manual refresh");
   if (!sdCard_.isMounted()) {
     setSdMounted(sdCard_.begin());
     sdCard_.printInfo(Serial);
   }
-  readSensors(true);
-  pollWeather(true);
-  pollHubMessages(true);
+  runScheduledTasks(true, false);
   markUiDirty();
 }
 
 void AppController::handleKeyDoubleClick() {
+  if (state_.page == DesktopClockPage::Todo) {
+    handleTodoStatusToggle();
+    return;
+  }
+
+  if (state_.page == DesktopClockPage::System) {
+    Serial.println("KEY: double ignored on system");
+    return;
+  }
+
   if (state_.page != DesktopClockPage::Message) {
-    handleSingleKeyClick();
+    Serial.println("KEY: double ignored on this page");
     return;
   }
 
@@ -409,21 +517,27 @@ void AppController::handleButtons() {
     const bool longPress = keyButton_.lastPressDurationMs() >= config_.keyLongPressMs;
     if (longPress) {
       state_.pendingKeyClick = false;
+      if (state_.page == DesktopClockPage::Todo) {
+        Serial.println("KEY: delete todo");
+        handleTodoDelete();
+        return;
+      }
+      if (state_.page != DesktopClockPage::System) {
+        Serial.println("KEY: long ignored on this page");
+        return;
+      }
       Serial.println("KEY: force network sync");
       if (!sdCard_.isMounted()) {
         setSdMounted(sdCard_.begin());
         sdCard_.printInfo(Serial);
       }
-      readSensors(true);
     }
     if (longPress && !wifi_.isConnected() && config_.wifiConfigured) {
       wifi_.connect(8000);
     }
     if (longPress) {
       trySyncTime(true);
-      syncHubTelemetry(true);
-      pollHubMessages(true);
-      pollWeather(true);
+      runScheduledTasks(true, true);
       markUiDirty();
     } else if (state_.newMessageAlert) {
       state_.pendingKeyClick = false;
@@ -441,6 +555,14 @@ void AppController::handleButtons() {
     state_.page = DesktopClockUi::nextPage(state_.page);
     if (state_.page == DesktopClockPage::Message) {
       state_.newMessageAlert = false;
+    }
+    if (state_.page == DesktopClockPage::Todo) {
+      const size_t count = hub_.todoCount();
+      if (count == 0) {
+        state_.selectedTodo = 0;
+      } else if (state_.selectedTodo >= count) {
+        state_.selectedTodo = count - 1;
+      }
     }
     state_.pendingKeyClick = false;
     markUiDirty();

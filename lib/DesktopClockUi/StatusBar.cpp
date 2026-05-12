@@ -14,6 +14,8 @@ const char* pageName(DesktopClockPage page) {
       return "CLOCK";
     case DesktopClockPage::Message:
       return "MESSAGE";
+    case DesktopClockPage::Todo:
+      return "TODO";
     case DesktopClockPage::Weather:
       return "WEATHER";
     case DesktopClockPage::System:

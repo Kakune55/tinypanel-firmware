@@ -17,9 +17,9 @@ struct AppControllerConfig {
   const char* deviceId = "tinypanel-001";
   const char* timezone = "CST-8";
   bool wifiConfigured = false;
-  uint32_t batteryPollMs = 60000;
-  uint32_t environmentPollMs = 30000;
   uint32_t rtcPollMs = 1000;
+  uint32_t hubSyncWindowMs = 60000;
+  uint8_t telemetryEveryHubSyncWindows = 5;
   uint32_t wifiRetryMs = 30000;
   uint32_t ntpRetryMs = 10UL * 60UL * 1000UL;
   uint32_t ntpUnsyncedRetryMs = 30000;
@@ -56,6 +56,7 @@ class AppController {
   void syncHubTelemetry(bool force = false);
   void pollHubMessages(bool force = false);
   void pollWeather(bool force = false);
+  void pollTodos(bool force = false);
   void loopOnce();
 
  private:
@@ -69,11 +70,10 @@ class AppController {
     bool ntpSyncFailed = false;
     bool sdMounted = false;
     bool uiDirty = true;
-    uint32_t lastBatteryMs = 0;
-    uint32_t lastEnvironmentMs = 0;
     uint32_t lastRtcMs = 0;
     uint32_t lastWifiRetryMs = 0;
     uint32_t lastNtpAttemptMs = 0;
+    uint32_t lastHubSyncWindowMs = 0;
     uint32_t pendingKeyClickMs = 0;
     uint32_t lastAlertBlinkMs = 0;
     bool pendingKeyClick = false;
@@ -82,6 +82,8 @@ class AppController {
     bool messageBodyFocused = false;
     bool newMessageAlert = false;
     String bootId;
+    size_t selectedTodo = 0;
+    uint8_t hubSyncWindowCount = 0;
   };
 
   static void handleHubStateChanged();
@@ -91,9 +93,14 @@ class AppController {
   DesktopClockUiModel buildUiModel() const;
   void renderHubState();
   void handleWifi();
+  void readRtc(bool force = false);
+  void runScheduledTasks(bool force = false, bool includeTelemetry = false);
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;
   void handleMessageKeyClick();
+  void handleTodoKeyClick();
+  void handleTodoStatusToggle();
+  void handleTodoDelete();
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();

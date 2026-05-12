@@ -45,6 +45,16 @@ struct HubMessage {
   String createdAt;
 };
 
+struct HubTodo {
+  int id = 0;
+  String text;
+  int status = 0;
+  int version = 0;
+  String createdAt;
+  String updatedAt;
+  bool dirty = false;
+};
+
 struct HubWeatherHourly {
   String time;
   String condition;
@@ -106,11 +116,13 @@ enum class HubSyncState {
 class HubService {
 public:
   static constexpr size_t MaxMessages = 10;
+  static constexpr size_t MaxTodos = 12;
 
   void begin(const char* baseUrl, const char* apiKey, const char* deviceId);
   void configureTelemetry(uint32_t intervalMs, uint32_t syncIconMinMs);
   void configureMessages(const char* channel, uint32_t pollIntervalMs, uint8_t limit);
   void configureWeather(uint32_t pollIntervalMs);
+  void configureTodos(uint32_t pollIntervalMs, uint8_t limit = MaxTodos);
   bool isConfigured() const;
   bool isSyncing() const;
   bool hasFailed() const;
@@ -128,30 +140,53 @@ public:
                                bool networkReady,
                                HubStateChangedCallback onStateChanged = nullptr,
                                uint32_t nowMs = millis());
+  HubRequestResult pollTodos(bool force,
+                             bool networkReady,
+                             HubStateChangedCallback onStateChanged = nullptr,
+                             uint32_t nowMs = millis());
+  HubRequestResult syncTodoChanges(bool networkReady,
+                                   HubStateChangedCallback onStateChanged = nullptr,
+                                   uint32_t nowMs = millis());
+  bool setTodoStatusLocal(size_t index, int status);
+  bool deleteTodoLocal(size_t index);
   size_t messageCount() const;
   const HubMessage* messages() const;
   const HubMessage* messageAt(size_t index) const;
   const HubWeather& weather() const;
+  size_t todoCount() const;
+  const HubTodo* todos() const;
+  const HubTodo* todoAt(size_t index) const;
 
 private:
   HubRequestResult sendTelemetry(const HubTelemetrySnapshot& snapshot);
   HubRequestResult syncSubscription();
   HubRequestResult fetchWeather();
+  HubRequestResult fetchTodos();
+  HubRequestResult patchTodoStatus(HubTodo& todo);
+  HubRequestResult deleteTodoByVersion(int id, int version);
   HubRequestResult fetchMessage(int id, HubMessage& out);
   HubRequestResult ackMessage(int id);
   void storeMessage(const HubMessage& message);
   bool hasMessage(int id) const;
   HubRequestResult postJson(const char* path, const String& body, const char* label);
+  HubRequestResult patchJson(const char* path, const String& body, JsonDocument* response, const char* label);
+  HubRequestResult deleteJson(const char* path, const String& body, const char* label);
   HubRequestResult getJson(const char* path, JsonDocument& doc, const char* label);
   HubRequestResult requestJson(const char* method, const char* path, const String* body, JsonDocument* response, const char* label);
   bool telemetryDue(bool force, uint32_t nowMs) const;
   bool messagePollDue(bool force, uint32_t nowMs) const;
   bool weatherPollDue(bool force, uint32_t nowMs) const;
+  bool todoPollDue(bool force, uint32_t nowMs) const;
   void beginRequest(uint32_t nowMs, HubStateChangedCallback onStateChanged);
   void completeRequest(const HubRequestResult& result, uint32_t nowMs);
   String urlEncode(const String& value) const;
   bool timeReached(uint32_t nowMs, uint32_t targetMs) const;
   bool hasUsableCredential(const char* value) const;
+
+  struct PendingTodoDelete {
+    int id = 0;
+    int version = 0;
+  };
 
   String baseUrl_;
   String apiKey_;
@@ -160,10 +195,12 @@ private:
   uint32_t telemetryIntervalMs_ = 5UL * 60UL * 1000UL;
   uint32_t messagePollIntervalMs_ = 60UL * 1000UL;
   uint32_t weatherPollIntervalMs_ = 10UL * 60UL * 1000UL;
+  uint32_t todoPollIntervalMs_ = 60UL * 1000UL;
   uint32_t syncIconMinMs_ = 3000;
   uint32_t lastTelemetryMs_ = 0;
   uint32_t lastMessagePollMs_ = 0;
   uint32_t lastWeatherPollMs_ = 0;
+  uint32_t lastTodoPollMs_ = 0;
   uint32_t syncMinUntilMs_ = 0;
   HubSyncState syncState_ = HubSyncState::Idle;
   bool requestResultPending_ = false;
@@ -173,4 +210,9 @@ private:
   HubMessage messages_[MaxMessages];
   size_t messageCount_ = 0;
   HubWeather weather_;
+  uint8_t todoLimit_ = MaxTodos;
+  HubTodo todos_[MaxTodos];
+  size_t todoCount_ = 0;
+  PendingTodoDelete pendingTodoDeletes_[MaxTodos];
+  size_t pendingTodoDeleteCount_ = 0;
 };

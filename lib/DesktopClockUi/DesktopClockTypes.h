@@ -10,11 +10,12 @@
 enum class DesktopClockPage {
   Clock,
   Message,
+  Todo,
   Weather,
   System,
 };
 
-constexpr int kDesktopClockPageCount = 4;
+constexpr int kDesktopClockPageCount = 5;
 
 struct DesktopClockUiModel {
   DesktopClockPage page = DesktopClockPage::Clock;
@@ -43,4 +44,7 @@ struct DesktopClockUiModel {
   size_t selectedMessage = 0;
   bool messageBodyFocused = false;
   uint16_t messageBodyScrollLine = 0;
+  const HubTodo* todos = nullptr;
+  size_t todoCount = 0;
+  size_t selectedTodo = 0;
 };

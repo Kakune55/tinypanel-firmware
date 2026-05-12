@@ -25,8 +25,10 @@ constexpr const char* kTimezone = "CST-8";
 constexpr uint32_t kHubTelemetryMs = 5UL * 60UL * 1000UL;
 constexpr uint32_t kHubMessagePollMs = 60UL * 1000UL;
 constexpr uint32_t kHubWeatherPollMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kHubTodoPollMs = 60UL * 1000UL;
 constexpr uint32_t kHubSyncIconMinMs = 3000;
 constexpr uint8_t kHubMessageLimit = 10;
+constexpr uint8_t kHubTodoLimit = 12;
 constexpr const char* kHubMessageChannel = "desk";
 constexpr size_t kBootLogLines = 12;
 
@@ -161,6 +163,7 @@ void setup() {
   hub.configureTelemetry(kHubTelemetryMs, kHubSyncIconMinMs);
   hub.configureMessages(kHubMessageChannel, kHubMessagePollMs, kHubMessageLimit);
   hub.configureWeather(kHubWeatherPollMs);
+  hub.configureTodos(kHubTodoPollMs, kHubTodoLimit);
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
   bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
 
@@ -177,6 +180,7 @@ void setup() {
   controller.syncHubTelemetry(true);
   controller.pollWeather(true);
   controller.pollHubMessages(true);
+  controller.pollTodos(true);
 }
 
 void loop() {

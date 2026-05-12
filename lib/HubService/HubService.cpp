@@ -56,6 +56,14 @@ void HubService::configureWeather(uint32_t pollIntervalMs) {
   weatherPollIntervalMs_ = pollIntervalMs;
 }
 
+void HubService::configureTodos(uint32_t pollIntervalMs, uint8_t limit) {
+  todoPollIntervalMs_ = pollIntervalMs;
+  todoLimit_ = static_cast<uint8_t>(min(static_cast<int>(limit), static_cast<int>(MaxTodos)));
+  if (todoLimit_ == 0) {
+    todoLimit_ = 1;
+  }
+}
+
 bool HubService::isSyncing() const {
   return syncState_ == HubSyncState::Syncing;
 }
@@ -123,6 +131,109 @@ HubRequestResult HubService::pollWeather(bool force,
   return result;
 }
 
+HubRequestResult HubService::pollTodos(bool force,
+                                       bool networkReady,
+                                       HubStateChangedCallback onStateChanged,
+                                       uint32_t nowMs) {
+  if (!todoPollDue(force, nowMs) || !isConfigured() || !networkReady) {
+    return {};
+  }
+
+  beginRequest(nowMs, onStateChanged);
+  HubRequestResult result = fetchTodos();
+  lastTodoPollMs_ = nowMs;
+  completeRequest(result, nowMs);
+  return result;
+}
+
+HubRequestResult HubService::syncTodoChanges(bool networkReady,
+                                             HubStateChangedCallback onStateChanged,
+                                             uint32_t nowMs) {
+  if (!isConfigured() || !networkReady) {
+    return {};
+  }
+
+  bool hasChanges = pendingTodoDeleteCount_ > 0;
+  for (size_t i = 0; i < todoCount_ && !hasChanges; ++i) {
+    hasChanges = todos_[i].dirty;
+  }
+  if (!hasChanges) {
+    return {};
+  }
+
+  beginRequest(nowMs, onStateChanged);
+  HubRequestResult result;
+  result.attempted = true;
+  result.ok = true;
+
+  for (size_t i = 0; i < todoCount_; ++i) {
+    if (!todos_[i].dirty) {
+      continue;
+    }
+    HubRequestResult patchResult = patchTodoStatus(todos_[i]);
+    result.statusCode = patchResult.statusCode;
+    result.ok = result.ok && patchResult.ok;
+    if (!patchResult.ok && patchResult.statusCode == 409) {
+      break;
+    }
+  }
+
+  if (result.ok) {
+    for (size_t i = 0; i < pendingTodoDeleteCount_; ++i) {
+      HubRequestResult deleteResult =
+          deleteTodoByVersion(pendingTodoDeletes_[i].id, pendingTodoDeletes_[i].version);
+      result.statusCode = deleteResult.statusCode;
+      result.ok = result.ok && deleteResult.ok;
+      if (!deleteResult.ok && deleteResult.statusCode == 409) {
+        break;
+      }
+    }
+  }
+
+  if (result.ok) {
+    pendingTodoDeleteCount_ = 0;
+    lastTodoPollMs_ = 0;
+    HubRequestResult refresh = fetchTodos();
+    result.ok = refresh.ok;
+    result.statusCode = refresh.statusCode;
+  } else if (result.statusCode == 409) {
+    pendingTodoDeleteCount_ = 0;
+    fetchTodos();
+  }
+
+  completeRequest(result, nowMs);
+  return result;
+}
+
+bool HubService::setTodoStatusLocal(size_t index, int status) {
+  if (index >= todoCount_ || status < 0 || status > 2) {
+    return false;
+  }
+  if (todos_[index].status == status) {
+    return true;
+  }
+  todos_[index].status = status;
+  todos_[index].dirty = true;
+  return true;
+}
+
+bool HubService::deleteTodoLocal(size_t index) {
+  if (index >= todoCount_) {
+    return false;
+  }
+  if (pendingTodoDeleteCount_ < MaxTodos && todos_[index].id > 0 && todos_[index].version > 0) {
+    pendingTodoDeletes_[pendingTodoDeleteCount_].id = todos_[index].id;
+    pendingTodoDeletes_[pendingTodoDeleteCount_].version = todos_[index].version;
+    ++pendingTodoDeleteCount_;
+  }
+
+  for (size_t i = index + 1; i < todoCount_; ++i) {
+    todos_[i - 1] = todos_[i];
+  }
+  --todoCount_;
+  return true;
+}
+
 size_t HubService::messageCount() const {
   return messageCount_;
 }
@@ -137,6 +248,18 @@ const HubMessage* HubService::messageAt(size_t index) const {
 
 const HubWeather& HubService::weather() const {
   return weather_;
+}
+
+size_t HubService::todoCount() const {
+  return todoCount_;
+}
+
+const HubTodo* HubService::todos() const {
+  return todoCount_ > 0 ? todos_ : nullptr;
+}
+
+const HubTodo* HubService::todoAt(size_t index) const {
+  return index < todoCount_ ? &todos_[index] : nullptr;
 }
 
 HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot) {
@@ -292,6 +415,72 @@ HubRequestResult HubService::fetchWeather() {
   return result;
 }
 
+HubRequestResult HubService::fetchTodos() {
+  JsonDocument doc;
+  HubRequestResult result = getJson("/todos", doc, "todos");
+  if (!result.ok) {
+    return result;
+  }
+
+  JsonArray items = doc.as<JsonArray>();
+  if (items.isNull()) {
+    result.ok = false;
+    return result;
+  }
+
+  HubTodo nextTodos[MaxTodos];
+  size_t nextCount = 0;
+  for (JsonObject item : items) {
+    if (nextCount >= todoLimit_) {
+      break;
+    }
+    HubTodo& out = nextTodos[nextCount];
+    out.id = item["id"] | 0;
+    out.text = item["text"] | "";
+    out.status = item["status"] | 0;
+    out.version = item["version"] | 0;
+    out.createdAt = item["created_at"] | "";
+    out.updatedAt = item["updated_at"] | "";
+    out.dirty = false;
+    if (out.id > 0 && out.text.length() > 0 && out.version > 0) {
+      ++nextCount;
+    }
+  }
+
+  for (size_t i = 0; i < nextCount; ++i) {
+    todos_[i] = nextTodos[i];
+  }
+  todoCount_ = nextCount;
+  return result;
+}
+
+HubRequestResult HubService::patchTodoStatus(HubTodo& todo) {
+  JsonDocument doc;
+  doc["version"] = todo.version;
+  doc["status"] = todo.status;
+
+  String body;
+  serializeJson(doc, body);
+
+  JsonDocument response;
+  HubRequestResult result = patchJson((String("/todos/") + todo.id).c_str(), body, &response, "todo patch");
+  if (result.ok) {
+    todo.version = response["version"] | todo.version;
+    todo.updatedAt = response["updated_at"] | todo.updatedAt;
+    todo.dirty = false;
+  }
+  return result;
+}
+
+HubRequestResult HubService::deleteTodoByVersion(int id, int version) {
+  JsonDocument doc;
+  doc["version"] = version;
+
+  String body;
+  serializeJson(doc, body);
+  return deleteJson((String("/todos/") + id).c_str(), body, "todo delete");
+}
+
 HubRequestResult HubService::fetchMessage(int id, HubMessage& out) {
   JsonDocument doc;
   HubRequestResult result = getJson((String("/messages/") + id).c_str(), doc, "message");
@@ -342,6 +531,14 @@ HubRequestResult HubService::postJson(const char* path, const String& body, cons
   return requestJson("POST", path, &body, nullptr, label);
 }
 
+HubRequestResult HubService::patchJson(const char* path, const String& body, JsonDocument* response, const char* label) {
+  return requestJson("PATCH", path, &body, response, label);
+}
+
+HubRequestResult HubService::deleteJson(const char* path, const String& body, const char* label) {
+  return requestJson("DELETE", path, &body, nullptr, label);
+}
+
 HubRequestResult HubService::getJson(const char* path, JsonDocument& doc, const char* label) {
   return requestJson("GET", path, nullptr, &doc, label);
 }
@@ -370,6 +567,8 @@ HubRequestResult HubService::requestJson(const char* method,
 
   if (strcmp(method, "POST") == 0) {
     result.statusCode = http.POST(body ? *body : String("{}"));
+  } else if (strcmp(method, "PATCH") == 0 || strcmp(method, "DELETE") == 0) {
+    result.statusCode = http.sendRequest(method, body ? *body : String("{}"));
   } else {
     result.statusCode = http.GET();
   }
@@ -397,6 +596,10 @@ bool HubService::messagePollDue(bool force, uint32_t nowMs) const {
 
 bool HubService::weatherPollDue(bool force, uint32_t nowMs) const {
   return force || lastWeatherPollMs_ == 0 || nowMs - lastWeatherPollMs_ >= weatherPollIntervalMs_;
+}
+
+bool HubService::todoPollDue(bool force, uint32_t nowMs) const {
+  return force || lastTodoPollMs_ == 0 || nowMs - lastTodoPollMs_ >= todoPollIntervalMs_;
 }
 
 void HubService::beginRequest(uint32_t nowMs, HubStateChangedCallback onStateChanged) {
