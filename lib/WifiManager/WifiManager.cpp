@@ -7,7 +7,7 @@ bool WifiManager::begin(const char* ssid, const char* password, uint32_t timeout
   password_ = password;
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
+  WiFi.setSleep(true);
   return connect(timeoutMs);
 }
 
@@ -36,7 +36,9 @@ bool WifiManager::connect(uint32_t timeoutMs) {
     return false;
   }
 
+  updateSignal();
   Serial.printf("WiFi: connected, IP=%s, RSSI=%d dBm\n", ipAddress().c_str(), rssi());
+  WiFi.setSleep(true);
   return true;
 }
 
@@ -45,6 +47,10 @@ void WifiManager::disconnect(bool radioOff) {
   if (radioOff) {
     WiFi.mode(WIFI_OFF);
   }
+}
+
+void WifiManager::updateSignal() {
+  cachedRssi_ = isConnected() ? WiFi.RSSI() : 0;
 }
 
 bool WifiManager::isConfigured() const {
@@ -60,7 +66,7 @@ String WifiManager::ipAddress() const {
 }
 
 int WifiManager::rssi() const {
-  return isConnected() ? WiFi.RSSI() : 0;
+  return isConnected() ? cachedRssi_ : 0;
 }
 
 String WifiManager::ssid() const {

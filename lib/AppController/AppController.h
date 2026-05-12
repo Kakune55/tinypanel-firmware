@@ -61,6 +61,11 @@ class AppController {
 
  private:
   struct State {
+    struct BatteryHistoryPoint {
+      uint32_t uptimeS = 0;
+      float percent = 0.0f;
+    };
+
     BatteryStatus battery;
     Shtc3Reading environment;
     RtcDateTime now;
@@ -84,6 +89,11 @@ class AppController {
     String bootId;
     size_t selectedTodo = 0;
     uint8_t hubSyncWindowCount = 0;
+    static constexpr size_t BatteryHistorySize = 180;
+    BatteryHistoryPoint batteryHistory[BatteryHistorySize];
+    size_t batteryHistoryCount = 0;
+    size_t batteryHistoryNext = 0;
+    int batteryEtaMinutes = -1;
   };
 
   static void handleHubStateChanged();
@@ -95,6 +105,7 @@ class AppController {
   void handleWifi();
   void readRtc(bool force = false);
   void runScheduledTasks(bool force = false, bool includeTelemetry = false);
+  void updateBatteryRuntimeEstimate();
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;
   void handleMessageKeyClick();

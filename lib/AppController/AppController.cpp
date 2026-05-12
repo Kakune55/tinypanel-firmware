@@ -56,6 +56,7 @@ void AppController::readSensors(bool force) {
   state_.battery = battery_.readStatus();
   shtc3_.read(state_.environment);
   readRtc(force);
+  updateBatteryRuntimeEstimate();
   markUiDirty();
 }
 
@@ -251,6 +252,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.uptimeMs = millis();
   model.freeHeap = ESP.getFreeHeap();
   model.freePsram = ESP.getFreePsram();
+  model.batteryEtaMinutes = state_.batteryEtaMinutes;
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
       state_.newMessageAlert && ((millis() / config_.newMessageBlinkMs) % 2 == 1);
@@ -295,6 +297,7 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
   }
 
   state_.lastHubSyncWindowMs = now;
+  wifi_.updateSignal();
   trySyncTime(false);
   readSensors(true);
   pollHubMessages(force);
@@ -325,6 +328,51 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
 
   if (telemetryDue) {
     syncHubTelemetry(true);
+  }
+}
+
+void AppController::updateBatteryRuntimeEstimate() {
+  const uint32_t nowS = millis() / 1000UL;
+  constexpr float kMaxSingleSampleDropPercent = 4.0f;
+  if (state_.batteryHistoryCount > 0) {
+    const State::BatteryHistoryPoint& previous =
+        state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
+    if (!state_.battery.charging && previous.percent - state_.battery.percentFloat > kMaxSingleSampleDropPercent) {
+      state_.batteryHistoryCount = 0;
+      state_.batteryHistoryNext = 0;
+      state_.batteryEtaMinutes = -1;
+      return;
+    }
+  }
+
+  state_.batteryHistory[state_.batteryHistoryNext].uptimeS = nowS;
+  state_.batteryHistory[state_.batteryHistoryNext].percent = state_.battery.percentFloat;
+  state_.batteryHistoryNext = (state_.batteryHistoryNext + 1) % State::BatteryHistorySize;
+  if (state_.batteryHistoryCount < State::BatteryHistorySize) {
+    ++state_.batteryHistoryCount;
+  }
+
+  state_.batteryEtaMinutes = -1;
+  if (state_.battery.charging || state_.battery.percentFloat <= 0.0f || state_.batteryHistoryCount < 10) {
+    return;
+  }
+
+  const size_t oldestIndex =
+      state_.batteryHistoryCount < State::BatteryHistorySize ? 0 : state_.batteryHistoryNext;
+  const State::BatteryHistoryPoint& oldest = state_.batteryHistory[oldestIndex];
+  const State::BatteryHistoryPoint& newest =
+      state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
+
+  const uint32_t elapsedS = newest.uptimeS - oldest.uptimeS;
+  const float percentDrop = oldest.percent - newest.percent;
+  if (elapsedS < 10UL * 60UL || percentDrop < 2.0f) {
+    return;
+  }
+
+  const float secondsPerPercent = elapsedS / percentDrop;
+  const float etaMinutes = newest.percent * secondsPerPercent / 60.0f;
+  if (etaMinutes > 0.0f && etaMinutes < 10000.0f) {
+    state_.batteryEtaMinutes = static_cast<int>(etaMinutes + 0.5f);
   }
 }
 

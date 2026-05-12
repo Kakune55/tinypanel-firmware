@@ -16,7 +16,7 @@ uint32_t toMillivolts(float voltage) {
 
 const char* batteryStatusText(const BatteryStatus& battery, bool usbConnected) {
   if (usbConnected) {
-    return battery.percent >= 98 ? "full" : "charging";
+    return battery.percentFloat >= 98.0f ? "full" : "charging";
   }
   return battery.critical ? "critical" : "discharging";
 }
@@ -280,7 +280,7 @@ HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot)
   battery["raw_adc"] = snapshot.battery.rawAdc;
   battery["raw_voltage_mv"] = snapshot.battery.rawVoltageMv;
   battery["voltage_mv"] = toMillivolts(snapshot.battery.voltage);
-  battery["percentage"] = snapshot.battery.percent;
+  battery["percentage"] = snapshot.battery.percentFloat;
   battery["status"] = batteryStatusText(snapshot.battery, snapshot.usbConnected);
   power["usb_connected"] = snapshot.usbConnected;
 

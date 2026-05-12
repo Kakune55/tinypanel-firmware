@@ -6,6 +6,7 @@ struct BatteryStatus {
   int rawAdc = 0;
   uint32_t rawVoltageMv = 0;
   float voltage = 0.0f;
+  float percentFloat = 0.0f;
   int percent = 0;
   bool charging = false;
   bool low = false;
@@ -18,7 +19,7 @@ public:
   int readRawAdc(int samples = 32) const;
   float readRawVoltage(int samples = 32) const;
   float readVoltage(int samples = 32) const;
-  int percentFromRawAdc(int rawAdc) const;
+  float percentFromRawAdc(int rawAdc) const;
   BatteryStatus readStatus(int samples = 32) const;
 
 private:

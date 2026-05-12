@@ -478,34 +478,66 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
 
   display.clear(true);
   statusBar.draw(model);
-  display.drawText(18, 48, "SYSTEM", true, 4);
-  display.drawFastHLine(18, 88, 364, true);
 
-  snprintf(text, sizeof(text), "IP %s", model.wifiConnected ? model.wifiIp.c_str() : "--");
-  display.drawText(24, 112, text, true, 1);
+  constexpr int leftX = 16;
+  constexpr int rightX = 212;
+  constexpr int topY = 42;
 
-  snprintf(text, sizeof(text), "SSID %s", model.wifiSsid.c_str());
-  display.drawText(24, 132, text, true, 1);
+  display.drawText(leftX, topY, "BATTERY", true, 2);
+  snprintf(text, sizeof(text), "%.2f%%", model.battery.percentFloat);
+  display.drawText(leftX, topY + 28, text, true, 3);
 
-  snprintf(text, sizeof(text), "NTP %s", model.ntpSynced ? "SYNCED" : "PENDING");
-  display.drawText(24, 152, text, true, 1);
+  snprintf(text, sizeof(text), "%.3fV ADC %d", model.battery.voltage, model.battery.rawAdc);
+  display.drawText(leftX, topY + 62, text, true, 1);
 
-  snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
-  display.drawText(24, 172, text, true, 1);
+  snprintf(text, sizeof(text), "RAW %lumV %s",
+           static_cast<unsigned long>(model.battery.rawVoltageMv),
+           model.battery.charging ? "CHG" : "BAT");
+  display.drawText(leftX, topY + 80, text, true, 1);
 
-  snprintf(text, sizeof(text), "HEAP %lu", static_cast<unsigned long>(model.freeHeap));
-  display.drawText(24, 192, text, true, 1);
-
-  snprintf(text, sizeof(text), "PSRAM %lu", static_cast<unsigned long>(model.freePsram));
-  display.drawText(24, 212, text, true, 1);
-
-  snprintf(text, sizeof(text), "BAT %.3fV %d%%", model.battery.voltage, model.battery.percent);
-  display.drawText(24, 232, text, true, 1);
+  if (model.batteryEtaMinutes >= 0) {
+    snprintf(text, sizeof(text), "ETA %dh%02dm", model.batteryEtaMinutes / 60, model.batteryEtaMinutes % 60);
+  } else {
+    snprintf(text, sizeof(text), "ETA --");
+  }
+  display.drawText(leftX, topY + 98, text, true, 2);
 
   if (model.environment.valid) {
     snprintf(text, sizeof(text), "ENV %.1fC %.0f%%", model.environment.temperatureC, model.environment.humidityRh);
-    display.drawText(24, 252, text, true, 1);
+  } else {
+    snprintf(text, sizeof(text), "ENV --");
   }
+  display.drawText(leftX, topY + 128, text, true, 1);
+
+  display.drawText(rightX, topY, "NETWORK", true, 2);
+  snprintf(text, sizeof(text), "WIFI %s %d", model.wifiConnected ? "ON" : "OFF", model.wifiRssi);
+  display.drawText(rightX, topY + 28, text, true, 1);
+
+  snprintf(text, sizeof(text), "IP %s", model.wifiConnected ? model.wifiIp.c_str() : "--");
+  display.drawText(rightX, topY + 46, text, true, 1);
+
+  snprintf(text, sizeof(text), "NTP %s", model.ntpSynced ? "OK" : "WAIT");
+  display.drawText(rightX, topY + 64, text, true, 1);
+
+  snprintf(text, sizeof(text), "HUB %s", model.hubSyncing ? "SYNC" : (model.hubSyncFailed ? "FAIL" : "OK"));
+  display.drawText(rightX, topY + 82, text, true, 1);
+
+  snprintf(text, sizeof(text), "MSG %u TODO %u", static_cast<unsigned>(model.messageCount),
+           static_cast<unsigned>(model.todoCount));
+  display.drawText(rightX, topY + 100, text, true, 1);
+
+  snprintf(text, sizeof(text), "HEAP %luK", static_cast<unsigned long>(model.freeHeap / 1024UL));
+  display.drawText(rightX, topY + 128, text, true, 1);
+
+  snprintf(text, sizeof(text), "PSRAM %luK", static_cast<unsigned long>(model.freePsram / 1024UL));
+  display.drawText(rightX, topY + 146, text, true, 1);
+
+  snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
+  display.drawText(rightX, topY + 164, text, true, 1);
+
+  snprintf(text, sizeof(text), "UP %luh%02lum", static_cast<unsigned long>(model.uptimeMs / 3600000UL),
+           static_cast<unsigned long>((model.uptimeMs / 60000UL) % 60UL));
+  display.drawText(leftX, topY + 164, text, true, 1);
 
   display.drawText(24, 270, "KEY REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);

@@ -36,6 +36,7 @@ struct DesktopClockUiModel {
   uint32_t uptimeMs = 0;
   uint32_t freeHeap = 0;
   uint32_t freePsram = 0;
+  int batteryEtaMinutes = -1;
   bool newMessageAlert = false;
   bool newMessageAlertInvert = false;
   HubWeather weather;

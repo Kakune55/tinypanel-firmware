@@ -154,14 +154,14 @@ float BatteryMonitor::readVoltage(int samples) const {
   return readRawVoltage(samples) * BoardConfig::BatteryVoltageCalibration + BoardConfig::BatteryVoltageOffset;
 }
 
-int BatteryMonitor::percentFromRawAdc(int rawAdc) const {
+float BatteryMonitor::percentFromRawAdc(int rawAdc) const {
   if (rawAdc >= kBatteryCurve[0].rawAdc) {
-    return 100;
+    return 100.0f;
   }
 
   constexpr size_t lastIndex = sizeof(kBatteryCurve) / sizeof(kBatteryCurve[0]) - 1;
   if (rawAdc <= kBatteryCurve[lastIndex].rawAdc) {
-    return 0;
+    return 0.0f;
   }
 
   for (size_t i = 0; i < lastIndex; ++i) {
@@ -169,11 +169,11 @@ int BatteryMonitor::percentFromRawAdc(int rawAdc) const {
     const auto low = kBatteryCurve[i + 1];
     if (rawAdc <= high.rawAdc && rawAdc >= low.rawAdc) {
       const float t = (rawAdc - low.rawAdc) / static_cast<float>(high.rawAdc - low.rawAdc);
-      return static_cast<int>(low.percent + t * (high.percent - low.percent) + 0.5f);
+      return low.percent + t * (high.percent - low.percent);
     }
   }
 
-  return 0;
+  return 0.0f;
 }
 
 bool BatteryMonitor::updateChargingState(int rawAdc) const {
@@ -224,9 +224,10 @@ BatteryStatus BatteryMonitor::readStatus(int samples) const {
   const float rawVoltage = readRawVoltage(samples);
   status.rawVoltageMv = static_cast<uint32_t>(rawVoltage * 1000.0f + 0.5f);
   status.voltage = rawVoltage * BoardConfig::BatteryVoltageCalibration + BoardConfig::BatteryVoltageOffset;
-  status.percent = percentFromRawAdc(status.rawAdc);
+  status.percentFloat = percentFromRawAdc(status.rawAdc);
+  status.percent = static_cast<int>(status.percentFloat + 0.5f);
   status.charging = updateChargingState(status.rawAdc);
-  status.low = status.percent <= 20;
-  status.critical = status.percent <= 10;
+  status.low = status.percentFloat <= 20.0f;
+  status.critical = status.percentFloat <= 10.0f;
   return status;
 }
