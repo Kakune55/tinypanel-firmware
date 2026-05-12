@@ -5,6 +5,7 @@
 #include "PixelFont5x7.h"
 #include "StatusBar.h"
 #include "UiDraw.h"
+#include "Utf8Text.h"
 
 namespace {
 
@@ -408,19 +409,19 @@ void drawMessagePage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
     const int y = itemY + static_cast<int>(i) * itemH;
     const bool active = i == selected;
     if (active) {
-      display.fillRect(listX, y, listW, itemH - 3, true);
+      display.fillRect(listX, y, listW, itemH + 1, true); 
     }
 
     char idText[12];
     snprintf(idText, sizeof(idText), "#%d", model.messages[i].id);
     display.drawText(listX + 4, y + 4, idText, !active, 1);
     drawClippedText(display, listX + 38, y + 4, messageTitle(model.messages[i]), 12, !active, 1);
-    drawClippedText(display, listX + 4, y + 17, model.messages[i].body, 18, !active, 1);
+    Utf8Text::drawClipped(display, listX + 4, y + 13, listW - 8, model.messages[i].body, !active);
   }
 
   const HubMessage& message = model.messages[selected];
   drawClippedText(display, bodyX, topY + 12, formatMessageTimestamp(message.createdAt), 19, true, 1);
-  drawWrappedText(display, bodyX, topY + 30, 19, 9, message.body, model.messageBodyScrollLine, true, 2, 21);
+  Utf8Text::drawWrapped(display, bodyX, topY + 30, bodyW, 11, message.body, model.messageBodyScrollLine, true, 18);
 
   display.drawText(24, 270, model.messageBodyFocused ? "KEY PAGE" : "KEY SELECT", true, 1);
   display.drawText(250, 270, "DBL FOCUS", true, 1);
@@ -463,7 +464,7 @@ void drawTodoPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClock
 
     display.drawRect(x + 6, itemY + 6, 12, 12, !active);
     display.drawText(x + 9, itemY + 9, todoStatusGlyph(todo.status), !active, 1);
-    drawClippedText(display, x + 28, itemY + 2, todo.text, 30, !active, 2);
+    Utf8Text::drawClipped(display, x + 28, itemY + 2, w - 34, todo.text, !active);
   }
 
   display.drawText(24, 270, "KEY SELECT", true, 1);

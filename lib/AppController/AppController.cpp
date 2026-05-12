@@ -1,5 +1,7 @@
 #include "AppController.h"
 
+#include "Utf8Text.h"
+
 namespace {
 
 AppController* activeController = nullptr;
@@ -354,26 +356,7 @@ HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {
 }
 
 uint16_t AppController::messageBodyLineCount(const String& text) const {
-  constexpr uint16_t kCharsPerLine = 19;
-  uint16_t lines = 1;
-  uint16_t col = 0;
-  for (size_t i = 0; i < text.length(); ++i) {
-    const char c = text[i];
-    if (c == '\r') {
-      continue;
-    }
-    if (c == '\n') {
-      ++lines;
-      col = 0;
-      continue;
-    }
-    ++col;
-    if (col >= kCharsPerLine) {
-      ++lines;
-      col = 0;
-    }
-  }
-  return lines;
+  return Utf8Text::wrappedLineCount(text, 236);
 }
 
 void AppController::handleMessageKeyClick() {
@@ -391,7 +374,7 @@ void AppController::handleMessageKeyClick() {
 
   const HubMessage* message = hub_.messageAt(state_.selectedMessage);
   const uint16_t lineCount = message ? messageBodyLineCount(message->body) : 1;
-  constexpr uint16_t kPageLines = 9;
+  constexpr uint16_t kPageLines = 11;
   if (lineCount <= kPageLines || state_.messageBodyScrollLine + kPageLines >= lineCount) {
     state_.messageBodyScrollLine = 0;
   } else {
