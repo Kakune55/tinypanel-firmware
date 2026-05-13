@@ -16,11 +16,11 @@ struct BatteryStatus {
 class BatteryMonitor {
 public:
   bool begin();
-  int readRawAdc(int samples = 32) const;
-  float readRawVoltage(int samples = 32) const;
-  float readVoltage(int samples = 32) const;
+  int readRawAdc(int samples = 16) const;
+  float readRawVoltage(int samples = 16) const;
+  float readVoltage(int samples = 16) const;
   float percentFromRawAdc(int rawAdc) const;
-  BatteryStatus readStatus(int samples = 32) const;
+  BatteryStatus readStatus(int samples = 16) const;
 
 private:
   bool updateChargingState(int rawAdc) const;

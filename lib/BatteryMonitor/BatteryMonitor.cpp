@@ -220,8 +220,18 @@ bool BatteryMonitor::updateChargingState(int rawAdc) const {
 BatteryStatus BatteryMonitor::readStatus(int samples) const {
   BatteryStatus status;
   samples = std::max(1, samples);
-  status.rawAdc = readRawAdc(samples);
-  const float rawVoltage = readRawVoltage(samples);
+  uint32_t sumRaw = 0;
+  uint32_t sumMv = 0;
+
+  for (int i = 0; i < samples; ++i) {
+    sumRaw += analogRead(BoardConfig::BatteryAdcPin);
+    sumMv += analogReadMilliVolts(BoardConfig::BatteryAdcPin);
+    delay(2);
+  }
+
+  status.rawAdc = static_cast<int>((sumRaw + samples / 2) / samples);
+  const float adcMv = sumMv / static_cast<float>(samples);
+  const float rawVoltage = adcMv / 1000.0f * BoardConfig::BatteryDividerRatio;
   status.rawVoltageMv = static_cast<uint32_t>(rawVoltage * 1000.0f + 0.5f);
   status.voltage = rawVoltage * BoardConfig::BatteryVoltageCalibration + BoardConfig::BatteryVoltageOffset;
   status.percentFloat = percentFromRawAdc(status.rawAdc);

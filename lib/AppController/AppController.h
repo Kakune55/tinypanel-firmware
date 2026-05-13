@@ -94,6 +94,9 @@ class AppController {
     size_t batteryHistoryCount = 0;
     size_t batteryHistoryNext = 0;
     int batteryEtaMinutes = -1;
+    bool hasBatteryEtaFilter = false;
+    bool batteryEtaWasCharging = false;
+    float batteryEtaFilteredPercent = 0.0f;
   };
 
   static void handleHubStateChanged();
