@@ -4,6 +4,7 @@
 #include "AppController.h"
 #include "BoardConfig.h"
 #include "I2cScanner.h"
+#include "WifiCredential.h"
 
 #if __has_include("AppSecrets.h")
 #include "AppSecrets.h"
@@ -11,8 +12,8 @@
 #else
 #define APP_HAS_WIFI_SECRETS 0
 namespace AppSecrets {
-constexpr const char* WifiSsid = "";
-constexpr const char* WifiPassword = "";
+constexpr WifiCredential WifiCredentials[] = {};
+constexpr size_t WifiCredentialCount = 0;
 constexpr const char* HubServerBaseURL = "";
 constexpr const char* HubServerApiKey = "";
 }  // namespace AppSecrets
@@ -151,7 +152,7 @@ void setup() {
 
   if (APP_HAS_WIFI_SECRETS) {
     bootLog("wifi: connect timeout 12s");
-    const bool wifiOk = wifi.begin(AppSecrets::WifiSsid, AppSecrets::WifiPassword, 12000);
+    const bool wifiOk = wifi.begin(AppSecrets::WifiCredentials, AppSecrets::WifiCredentialCount, 12000);
     bootLogf("wifi: %s", wifiOk ? wifi.ipAddress().c_str() : "failed");
   } else {
     Serial.println("WiFi: create include/AppSecrets.h from AppSecrets.example.h to enable network");

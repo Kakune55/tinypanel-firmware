@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <cstring>
 
 namespace {
@@ -551,11 +552,18 @@ HubRequestResult HubService::requestJson(const char* method,
   HubRequestResult result;
   result.attempted = true;
   WiFiClient client;
+  WiFiClientSecure secureClient;
+  WiFiClient* requestClient = &client;
+  if (baseUrl_.startsWith("https://")) {
+    secureClient.setInsecure();
+    requestClient = &secureClient;
+  }
+
   HTTPClient http;
   http.setTimeout(kHttpTimeoutMs);
   http.setConnectTimeout(kHttpTimeoutMs);
 
-  if (!http.begin(client, baseUrl_ + path)) {
+  if (!http.begin(*requestClient, baseUrl_ + path)) {
     Serial.printf("Hub: %s HTTP begin failed\n", label);
     return result;
   }

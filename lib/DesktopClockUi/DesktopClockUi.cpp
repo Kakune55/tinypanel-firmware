@@ -513,27 +513,29 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   snprintf(text, sizeof(text), "WIFI %s %d", model.wifiConnected ? "ON" : "OFF", model.wifiRssi);
   display.drawText(rightX, topY + 28, text, true, 1);
 
-  snprintf(text, sizeof(text), "IP %s", model.wifiConnected ? model.wifiIp.c_str() : "--");
-  display.drawText(rightX, topY + 46, text, true, 1);
+  drawClippedText(display, rightX, topY + 46, model.wifiConnected ? model.wifiSsid : String("--"), 22, true, 1);
 
-  snprintf(text, sizeof(text), "NTP %s", model.ntpSynced ? "OK" : "WAIT");
+  snprintf(text, sizeof(text), "IP %s", model.wifiConnected ? model.wifiIp.c_str() : "--");
   display.drawText(rightX, topY + 64, text, true, 1);
 
-  snprintf(text, sizeof(text), "HUB %s", model.hubSyncing ? "SYNC" : (model.hubSyncFailed ? "FAIL" : "OK"));
+  snprintf(text, sizeof(text), "NTP %s", model.ntpSynced ? "OK" : "WAIT");
   display.drawText(rightX, topY + 82, text, true, 1);
+
+  snprintf(text, sizeof(text), "HUB %s", model.hubSyncing ? "SYNC" : (model.hubSyncFailed ? "FAIL" : "OK"));
+  display.drawText(rightX, topY + 100, text, true, 1);
 
   snprintf(text, sizeof(text), "MSG %u TODO %u", static_cast<unsigned>(model.messageCount),
            static_cast<unsigned>(model.todoCount));
-  display.drawText(rightX, topY + 100, text, true, 1);
+  display.drawText(rightX, topY + 118, text, true, 1);
 
   snprintf(text, sizeof(text), "HEAP %luK", static_cast<unsigned long>(model.freeHeap / 1024UL));
-  display.drawText(rightX, topY + 128, text, true, 1);
-
-  snprintf(text, sizeof(text), "PSRAM %luK", static_cast<unsigned long>(model.freePsram / 1024UL));
   display.drawText(rightX, topY + 146, text, true, 1);
 
-  snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
+  snprintf(text, sizeof(text), "PSRAM %luK", static_cast<unsigned long>(model.freePsram / 1024UL));
   display.drawText(rightX, topY + 164, text, true, 1);
+
+  snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
+  display.drawText(rightX, topY + 182, text, true, 1);
 
   snprintf(text, sizeof(text), "UP %luh%02lum", static_cast<unsigned long>(model.uptimeMs / 3600000UL),
            static_cast<unsigned long>((model.uptimeMs / 60000UL) % 60UL));
