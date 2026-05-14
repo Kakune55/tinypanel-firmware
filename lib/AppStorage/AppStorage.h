@@ -33,7 +33,7 @@ struct StoredDeviceConfig {
   uint32_t hubTodoPollMs = 60UL * 1000UL;
   uint8_t hubMessageLimit = 10;
   uint8_t hubTodoLimit = 12;
-  uint32_t batteryLogIntervalMs = 60UL * 1000UL;
+  uint32_t batteryLogIntervalMs = 5UL * 60UL * 1000UL;
   bool loaded = false;
 };
 

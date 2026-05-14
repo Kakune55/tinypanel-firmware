@@ -1,6 +1,16 @@
 #include "WifiManager.h"
 
 #include <WiFi.h>
+#include "esp_wifi.h"
+
+namespace {
+
+void enableMaxModemSleep() {
+  WiFi.setSleep(true);
+  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+}
+
+}  // namespace
 
 bool WifiManager::begin(const char* ssid, const char* password, uint32_t timeoutMs) {
   singleCredential_ = {ssid, password};
@@ -13,7 +23,7 @@ bool WifiManager::begin(const WifiCredential* credentials, size_t credentialCoun
   activeCredential_ = 0;
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(true);
+  enableMaxModemSleep();
   return connect(timeoutMs);
 }
 
@@ -119,7 +129,7 @@ bool WifiManager::connect(uint32_t timeoutMs) {
       activeCredential_ = index;
       updateSignal();
       Serial.printf("WiFi: connected to %s, IP=%s, RSSI=%d dBm\n", WiFi.SSID().c_str(), ipAddress().c_str(), rssi());
-      WiFi.setSleep(true);
+      enableMaxModemSleep();
       return true;
     }
   }

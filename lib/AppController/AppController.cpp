@@ -208,7 +208,6 @@ void AppController::loopOnce() {
   handlePendingKeyClick();
   handleWifi();
   readRtc(false);
-  refreshSdStats(false);
   runScheduledTasks(false);
   const bool didInitialHubWork = runNextInitialHubSyncStep();
   if (!didInitialHubWork) {
@@ -713,7 +712,11 @@ void AppController::handleTodoDelete() {
 
 void AppController::handleSystemKeyClick() {
   constexpr uint8_t kSystemMenuItemCount = 3;
+  constexpr uint8_t kSystemMenuStorage = 1;
   state_.selectedSystemMenuItem = (state_.selectedSystemMenuItem + 1) % kSystemMenuItemCount;
+  if (state_.selectedSystemMenuItem == kSystemMenuStorage) {
+    refreshSdStats(true);
+  }
   markUiDirty();
   Serial.println("KEY: system menu");
 }
@@ -828,6 +831,9 @@ void AppController::handleButtons() {
   if (bootButton_.consumeReleased()) {
     noteActivity();
     state_.page = DesktopClockUi::nextPage(state_.page);
+    if (state_.page == DesktopClockPage::System && state_.selectedSystemMenuItem == 1) {
+      refreshSdStats(true);
+    }
     if (state_.page == DesktopClockPage::Message) {
       state_.newMessageAlert = false;
     }
@@ -904,8 +910,6 @@ void AppController::sleepUntilNextDeadline() {
   uint32_t sleepMs = kLightSleepMaxMs;
 
   sleepMs = min(sleepMs, msUntil(state_.lastRtcMs + config_.rtcPollMs, now));
-  sleepMs = min(sleepMs, msUntil(state_.lastSdStatsMs + config_.sdStatsRefreshMs, now));
-
   if (config_.wifiConfigured && !wifi_.isConnected()) {
     sleepMs = min(sleepMs, msUntil(state_.lastWifiRetryMs + config_.wifiRetryMs, now));
   }
