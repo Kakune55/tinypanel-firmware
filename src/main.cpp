@@ -78,6 +78,16 @@ WifiCredential appSecretsWifiCredential = {AppSecrets::WifiSsid, AppSecrets::Wif
 BatteryCurvePoint sdBatteryCurve[BatteryMonitor::MaxExternalCurvePoints];
 HubMessage sdCachedMessages[HubService::MaxMessages];
 
+void storageLog(const char* event, const char* detail, const char* level = "INFO") {
+  if (!appStorage.isReady()) {
+    return;
+  }
+
+  RtcDateTime now;
+  rtc.read(now);
+  appStorage.appendSystemLog(now, millis() / 1000UL, level, event, detail);
+}
+
 void drawBootLog() {
   if (!display.isReady()) {
     return;
@@ -162,14 +172,17 @@ void setup() {
   if (controller.sdMounted()) {
     const bool storageOk = appStorage.begin(sdCard);
     bootLogf("storage: %s", storageOk ? "ready" : "failed");
+    storageLog("storage", storageOk ? "ready" : "failed", storageOk ? "INFO" : "WARN");
 
     size_t curveCount = 0;
     if (appStorage.loadBatteryCurve(sdBatteryCurve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
         battery.setBatteryCurve(sdBatteryCurve, curveCount)) {
       batteryCurveFromSd = true;
       bootLogf("battery curve: sd %u", static_cast<unsigned>(curveCount));
+      storageLog("battery_curve", "loaded from sd");
     } else {
       bootLog("battery curve: built-in");
+      storageLog("battery_curve", "using built-in", "WARN");
     }
 
     size_t cachedMessageCount = 0;
@@ -177,6 +190,7 @@ void setup() {
       hub.setMessages(sdCachedMessages, cachedMessageCount);
       messagesRestoredFromSd = true;
       bootLogf("messages: cached %u", static_cast<unsigned>(cachedMessageCount));
+      storageLog("messages", "restored cache");
     }
   }
 
@@ -191,12 +205,15 @@ void setup() {
     bootLog("wifi: connect timeout 12s");
     const bool wifiOk = wifi.begin(wifiCredentials, wifiCredentialCount, 12000);
     bootLogf("wifi: %s", wifiOk ? wifi.ipAddress().c_str() : "failed");
+    storageLog("wifi", wifiOk ? wifi.ipAddress().c_str() : "failed", wifiOk ? "INFO" : "WARN");
     if (sdWifiOk) {
       Serial.println("WiFi: loaded credentials from SD");
+      storageLog("wifi_config", "loaded from sd");
     }
   } else {
     Serial.println("WiFi: create include/AppSecrets.h or /tinypanel/config/wifi.json to enable network");
     bootLog("wifi: not configured");
+    storageLog("wifi", "not configured", "WARN");
   }
 
   bootLog("hub: configure client");
@@ -207,15 +224,18 @@ void setup() {
   hub.configureTodos(kHubTodoPollMs, kHubTodoLimit);
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
   bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
+  storageLog("hub", hub.isConfigured() ? "configured" : "disabled", hub.isConfigured() ? "INFO" : "WARN");
 
   bootLog("sensors: first read");
   controller.readSensors(true);
   bootLog("ntp: sync timeout 12s");
   controller.trySyncTime(true);
   bootLogf("ntp: %s", controller.ntpSynced() ? "synced" : "failed");
+  storageLog("ntp", controller.ntpSynced() ? "synced" : "failed", controller.ntpSynced() ? "INFO" : "WARN");
   controller.makeBootIdFromCurrentTime();
 
   bootLog("ui: start desktop");
+  storageLog("ui", "start desktop");
   controller.setBootScreenActive(false);
   controller.renderUi();
 }

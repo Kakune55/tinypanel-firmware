@@ -29,6 +29,7 @@ class AppStorage {
   bool loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const;
   bool loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_t& outCount) const;
   bool appendBatterySample(const BatteryStatus& battery, const RtcDateTime& now, uint32_t uptimeS);
+  bool appendSystemLog(const RtcDateTime& now, uint32_t uptimeS, const char* level, const char* event, const char* detail);
 
  private:
   static constexpr const char* RootDir = "/tinypanel";
@@ -42,6 +43,7 @@ class AppStorage {
   static constexpr const char* BatteryCurvePath = "/tinypanel/calib/battery_curve.csv";
 
   String batteryLogPath(const RtcDateTime& now) const;
+  String systemLogPath(const RtcDateTime& now) const;
   String timestampOrUptime(const RtcDateTime& now, uint32_t uptimeS) const;
   bool parseBatteryCurveLine(const String& line, BatteryCurvePoint& out) const;
 

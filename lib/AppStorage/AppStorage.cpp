@@ -185,12 +185,43 @@ bool AppStorage::appendBatterySample(const BatteryStatus& battery, const RtcDate
   return sd_->appendLine(path.c_str(), line);
 }
 
+bool AppStorage::appendSystemLog(const RtcDateTime& now,
+                                 uint32_t uptimeS,
+                                 const char* level,
+                                 const char* event,
+                                 const char* detail) {
+  if (!isReady()) {
+    return false;
+  }
+
+  char line[192];
+  snprintf(line,
+           sizeof(line),
+           "%s,%lu,%s,%s,%s",
+           timestampOrUptime(now, uptimeS).c_str(),
+           static_cast<unsigned long>(uptimeS),
+           level && level[0] ? level : "INFO",
+           event && event[0] ? event : "-",
+           detail && detail[0] ? detail : "-");
+  return sd_->appendLine(systemLogPath(now).c_str(), line);
+}
+
 String AppStorage::batteryLogPath(const RtcDateTime& now) const {
   char buffer[48];
   if (now.valid) {
     snprintf(buffer, sizeof(buffer), "/tinypanel/logs/battery_%04u%02u%02u.csv", now.year, now.month, now.day);
   } else {
     snprintf(buffer, sizeof(buffer), "/tinypanel/logs/battery_uptime.csv");
+  }
+  return String(buffer);
+}
+
+String AppStorage::systemLogPath(const RtcDateTime& now) const {
+  char buffer[48];
+  if (now.valid) {
+    snprintf(buffer, sizeof(buffer), "/tinypanel/logs/system_%04u%02u%02u.log", now.year, now.month, now.day);
+  } else {
+    snprintf(buffer, sizeof(buffer), "/tinypanel/logs/system_uptime.log");
   }
   return String(buffer);
 }
