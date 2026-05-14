@@ -47,6 +47,7 @@ struct DesktopClockUiModel {
   uint32_t heapSize = 0;
   uint32_t freePsram = 0;
   uint32_t psramSize = 0;
+  uint32_t cpuMhz = 0;
   int batteryEtaMinutes = -1;
   bool newMessageAlert = false;
   bool newMessageAlertInvert = false;

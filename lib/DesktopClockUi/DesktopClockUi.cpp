@@ -584,9 +584,11 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     drawClippedText(display, rightX, detailY + 48, model.wifiConnected ? model.wifiSsid : String("--"), 18, true, 1);
     snprintf(text, sizeof(text), "IP %s", model.wifiConnected ? model.wifiIp.c_str() : "--");
     display.drawText(rightX, detailY + 66, text, true, 1);
+    snprintf(text, sizeof(text), "CPU %luMHz", static_cast<unsigned long>(model.cpuMhz));
+    display.drawText(rightX, detailY + 84, text, true, 1);
     drawResourceBar(display,
                     rightX,
-                    detailY + 94,
+                    detailY + 106,
                     124,
                     "HEAP",
                     (model.heapSize - min(model.heapSize, model.freeHeap)) / 1024UL,
@@ -594,17 +596,17 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
                     "K");
     drawResourceBar(display,
                     rightX,
-                    detailY + 132,
+                    detailY + 144,
                     124,
                     "PSRAM",
                     (model.psramSize - min(model.psramSize, model.freePsram)) / 1024UL,
                     model.psramSize / 1024UL,
                     "K");
     snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
-    display.drawText(rightX, detailY + 172, text, true, 1);
+    display.drawText(rightX, detailY + 184, text, true, 1);
     snprintf(text, sizeof(text), "UP %luh%02lum", static_cast<unsigned long>(model.uptimeMs / 3600000UL),
              static_cast<unsigned long>((model.uptimeMs / 60000UL) % 60UL));
-    display.drawText(rightX, detailY + 190, text, true, 1);
+    display.drawText(rightX, detailY + 202, text, true, 1);
   }
 
   display.drawText(24, 270, "KEY MENU", true, 1);

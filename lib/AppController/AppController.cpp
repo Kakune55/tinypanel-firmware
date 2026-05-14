@@ -1,10 +1,15 @@
 #include "AppController.h"
 
+#include "BoardConfig.h"
 #include "Utf8Text.h"
+
+#include "esp_sleep.h"
 
 namespace {
 
 AppController* activeController = nullptr;
+constexpr uint32_t kLightSleepMinMs = 20;
+constexpr uint32_t kLightSleepMaxMs = 120;
 
 }  // namespace
 
@@ -43,6 +48,7 @@ void AppController::setBootScreenActive(bool active) {
 
 void AppController::applyConfig(const AppControllerConfig& config) {
   config_ = config;
+  noteActivity();
   markUiDirty();
 }
 
@@ -194,6 +200,10 @@ void AppController::pollTodos(bool force) {
 }
 
 void AppController::loopOnce() {
+  if (state_.lastActivityMs == 0) {
+    state_.lastActivityMs = millis();
+  }
+  updateCpuFrequency();
   handleButtons();
   handlePendingKeyClick();
   handleWifi();
@@ -221,7 +231,8 @@ void AppController::loopOnce() {
     renderUi();
   }
 
-  delay(config_.loopDelayMs);
+  updateCpuFrequency();
+  sleepUntilNextDeadline();
 }
 
 void AppController::handleHubStateChanged() {
@@ -297,6 +308,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.heapSize = ESP.getHeapSize();
   model.freePsram = ESP.getFreePsram();
   model.psramSize = ESP.getPsramSize();
+  model.cpuMhz = getCpuFrequencyMhz();
   model.batteryEtaMinutes = state_.batteryEtaMinutes;
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
@@ -447,6 +459,7 @@ bool AppController::runNextScheduledTask() {
 }
 
 void AppController::queueScheduledTasks(bool force, bool includeTelemetry) {
+  noteActivity();
   state_.scheduledTaskForce = force;
   state_.scheduledTaskIncludeTelemetry = includeTelemetry;
   state_.scheduledTaskTodoSyncOk = true;
@@ -785,6 +798,7 @@ void AppController::handleButtons() {
   bootButton_.update();
 
   if (keyButton_.consumeReleased()) {
+    noteActivity();
     const uint32_t now = millis();
     const bool longPress = keyButton_.lastPressDurationMs() >= config_.keyLongPressMs;
     if (longPress) {
@@ -812,6 +826,7 @@ void AppController::handleButtons() {
   }
 
   if (bootButton_.consumeReleased()) {
+    noteActivity();
     state_.page = DesktopClockUi::nextPage(state_.page);
     if (state_.page == DesktopClockPage::Message) {
       state_.newMessageAlert = false;
@@ -828,6 +843,116 @@ void AppController::handleButtons() {
     markUiDirty();
     Serial.println("BOOT: page switched");
   }
+}
+
+void AppController::noteActivity() {
+  state_.lastActivityMs = millis();
+  if (config_.enableDynamicCpuFrequency) {
+    applyCpuFrequency(config_.activeCpuMhz);
+  }
+}
+
+void AppController::updateCpuFrequency() {
+  if (!config_.enableDynamicCpuFrequency) {
+    return;
+  }
+
+  applyCpuFrequency(shouldUseActiveCpu() ? config_.activeCpuMhz : config_.idleCpuMhz);
+}
+
+void AppController::applyCpuFrequency(uint8_t mhz) {
+  if (mhz == 0 || state_.currentCpuMhz == mhz) {
+    return;
+  }
+
+  if (setCpuFrequencyMhz(mhz)) {
+    state_.currentCpuMhz = mhz;
+    Serial.printf("CPU: %u MHz\n", static_cast<unsigned>(mhz));
+  } else {
+    Serial.printf("CPU: set %u MHz failed\n", static_cast<unsigned>(mhz));
+  }
+}
+
+bool AppController::shouldUseActiveCpu() const {
+  const uint32_t now = millis();
+  if (state_.lastActivityMs == 0 || now - state_.lastActivityMs < config_.cpuIdleAfterMs) {
+    return true;
+  }
+  if (bootScreenActive_ || state_.uiDirty || hub_.isSyncing()) {
+    return true;
+  }
+  if (state_.pendingKeyClick || keyButton_.isPressed() || bootButton_.isPressed()) {
+    return true;
+  }
+  if (state_.scheduledTaskStep != State::ScheduledTaskStep::Idle ||
+      state_.initialHubSyncStep != State::InitialHubSyncStep::Done) {
+    return true;
+  }
+  if (state_.newMessageAlert) {
+    return true;
+  }
+  return false;
+}
+
+void AppController::sleepUntilNextDeadline() {
+  if (!canLightSleep()) {
+    delay(config_.loopDelayMs);
+    return;
+  }
+
+  const uint32_t now = millis();
+  uint32_t sleepMs = kLightSleepMaxMs;
+
+  sleepMs = min(sleepMs, msUntil(state_.lastRtcMs + config_.rtcPollMs, now));
+  sleepMs = min(sleepMs, msUntil(state_.lastSdStatsMs + config_.sdStatsRefreshMs, now));
+
+  if (config_.wifiConfigured && !wifi_.isConnected()) {
+    sleepMs = min(sleepMs, msUntil(state_.lastWifiRetryMs + config_.wifiRetryMs, now));
+  }
+
+  if (state_.lastHubSyncWindowMs != 0) {
+    sleepMs = min(sleepMs, msUntil(state_.lastHubSyncWindowMs + config_.hubSyncWindowMs, now));
+  }
+
+  if (state_.pendingKeyClick) {
+    sleepMs = min(sleepMs, msUntil(state_.pendingKeyClickMs + config_.keyDoubleClickMs, now));
+  }
+
+  if (state_.newMessageAlert) {
+    sleepMs = min(sleepMs, msUntil(state_.lastAlertBlinkMs + config_.newMessageBlinkMs, now));
+  }
+
+  if (sleepMs < kLightSleepMinMs) {
+    delay(config_.loopDelayMs);
+    return;
+  }
+
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(sleepMs) * 1000ULL);
+  const uint64_t buttonWakeMask = (1ULL << BoardConfig::ButtonKey) | (1ULL << BoardConfig::ButtonBoot);
+  esp_sleep_enable_ext1_wakeup(buttonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+  esp_light_sleep_start();
+}
+
+uint32_t AppController::msUntil(uint32_t targetMs, uint32_t nowMs) const {
+  return static_cast<int32_t>(targetMs - nowMs) > 0 ? targetMs - nowMs : 0;
+}
+
+bool AppController::canLightSleep() const {
+  if (!config_.enableLightSleep) {
+    return false;
+  }
+  if (bootScreenActive_ || state_.uiDirty || hub_.isSyncing()) {
+    return false;
+  }
+  if (keyButton_.isPressed() || bootButton_.isPressed()) {
+    return false;
+  }
+  if (state_.scheduledTaskStep != State::ScheduledTaskStep::Idle ||
+      state_.initialHubSyncStep != State::InitialHubSyncStep::Done) {
+    return false;
+  }
+  return true;
 }
 
 void AppController::markUiDirty() {

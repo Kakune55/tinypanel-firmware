@@ -2,6 +2,8 @@
 #include <cstdarg>
 #include <cstring>
 
+#include "esp_system.h"
+
 #include "AppController.h"
 #include "AppStorage.h"
 #include "BoardConfig.h"
@@ -134,6 +136,7 @@ void setup() {
 
   Serial.println();
   Serial.println("ESP32-S3 RLCD 4.2 Demo UI");
+  Serial.printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));
   Serial.printf("PSRAM found: %s\n", psramFound() ? "yes" : "no");
   Serial.printf("Flash size: %u bytes\n", ESP.getFlashChipSize());
 
