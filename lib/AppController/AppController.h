@@ -49,6 +49,7 @@ class AppController {
                 DesktopClockUi& ui);
 
   void setBootScreenActive(bool active);
+  void applyConfig(const AppControllerConfig& config);
   void setSdMounted(bool mounted);
   void setWifiConfigured(bool configured);
   void setStorageConfigStatus(bool wifiFromSd, bool batteryCurveFromSd, bool messagesRestoredFromSd);

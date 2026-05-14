@@ -19,12 +19,31 @@ struct StoredWifiCredentials {
   size_t count = 0;
 };
 
+struct StoredDeviceConfig {
+  static constexpr size_t MaxDeviceIdLength = 32;
+  static constexpr size_t MaxTimezoneLength = 32;
+  static constexpr size_t MaxMessageChannelLength = 32;
+
+  char deviceId[MaxDeviceIdLength + 1] = "tinypanel-001";
+  char timezone[MaxTimezoneLength + 1] = "CST-8";
+  char messageChannel[MaxMessageChannelLength + 1] = "desk";
+  uint32_t hubTelemetryMs = 5UL * 60UL * 1000UL;
+  uint32_t hubMessagePollMs = 60UL * 1000UL;
+  uint32_t hubWeatherPollMs = 10UL * 60UL * 1000UL;
+  uint32_t hubTodoPollMs = 60UL * 1000UL;
+  uint8_t hubMessageLimit = 10;
+  uint8_t hubTodoLimit = 12;
+  uint32_t batteryLogIntervalMs = 60UL * 1000UL;
+  bool loaded = false;
+};
+
 class AppStorage {
  public:
   bool begin(SdCardStorage& sd);
   bool isReady() const;
 
   bool loadWifiCredentials(StoredWifiCredentials& out) const;
+  bool loadDeviceConfig(StoredDeviceConfig& config) const;
   bool saveMessages(const HubMessage* messages, size_t count);
   bool loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const;
   bool saveWeather(const HubWeather& weather);
@@ -43,6 +62,7 @@ class AppStorage {
   static constexpr const char* CalibDir = "/tinypanel/calib";
   static constexpr const char* StateDir = "/tinypanel/state";
   static constexpr const char* WifiPath = "/tinypanel/config/wifi.json";
+  static constexpr const char* DevicePath = "/tinypanel/config/device.json";
   static constexpr const char* MessagesPath = "/tinypanel/cache/messages.json";
   static constexpr const char* WeatherPath = "/tinypanel/cache/weather.json";
   static constexpr const char* TodosPath = "/tinypanel/cache/todos.json";

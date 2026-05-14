@@ -68,6 +68,55 @@ bool AppStorage::loadWifiCredentials(StoredWifiCredentials& out) const {
   return out.count > 0;
 }
 
+bool AppStorage::loadDeviceConfig(StoredDeviceConfig& config) const {
+  if (!isReady()) {
+    return false;
+  }
+
+  String text;
+  if (!sd_->readText(DevicePath, text, 4096)) {
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, text);
+  if (error) {
+    return false;
+  }
+
+  copyField(config.deviceId, sizeof(config.deviceId), doc["device_id"] | config.deviceId);
+  copyField(config.timezone, sizeof(config.timezone), doc["timezone"] | config.timezone);
+  copyField(config.messageChannel, sizeof(config.messageChannel), doc["message_channel"] | config.messageChannel);
+
+  const uint32_t telemetryS = doc["hub_telemetry_s"] | 0;
+  const uint32_t messagePollS = doc["hub_message_poll_s"] | 0;
+  const uint32_t weatherPollS = doc["hub_weather_poll_s"] | 0;
+  const uint32_t todoPollS = doc["hub_todo_poll_s"] | 0;
+  const uint32_t batteryLogS = doc["battery_log_interval_s"] | 0;
+  if (telemetryS > 0) {
+    config.hubTelemetryMs = telemetryS * 1000UL;
+  }
+  if (messagePollS > 0) {
+    config.hubMessagePollMs = messagePollS * 1000UL;
+  }
+  if (weatherPollS > 0) {
+    config.hubWeatherPollMs = weatherPollS * 1000UL;
+  }
+  if (todoPollS > 0) {
+    config.hubTodoPollMs = todoPollS * 1000UL;
+  }
+  if (batteryLogS > 0) {
+    config.batteryLogIntervalMs = batteryLogS * 1000UL;
+  }
+
+  const int messageLimit = doc["hub_message_limit"] | config.hubMessageLimit;
+  const int todoLimit = doc["hub_todo_limit"] | config.hubTodoLimit;
+  config.hubMessageLimit = static_cast<uint8_t>(constrain(messageLimit, 1, static_cast<int>(HubService::MaxMessages)));
+  config.hubTodoLimit = static_cast<uint8_t>(constrain(todoLimit, 1, static_cast<int>(HubService::MaxTodos)));
+  config.loaded = true;
+  return true;
+}
+
 bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
   if (!isReady() || (!messages && count > 0)) {
     return false;

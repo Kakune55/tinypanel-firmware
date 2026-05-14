@@ -48,12 +48,14 @@ Shtc3Sensor shtc3;
 TimeSync timeSync;
 WifiManager wifi;
 DesktopClockUi ui(display);
+StoredDeviceConfig deviceConfig;
 
 AppControllerConfig makeAppControllerConfig() {
   AppControllerConfig config;
-  config.deviceId = kDeviceId;
-  config.timezone = kTimezone;
+  config.deviceId = deviceConfig.deviceId;
+  config.timezone = deviceConfig.timezone;
   config.wifiConfigured = APP_HAS_WIFI_SECRETS;
+  config.batteryLogIntervalMs = deviceConfig.batteryLogIntervalMs;
   return config;
 }
 
@@ -176,6 +178,15 @@ void setup() {
     bootLogf("storage: %s", storageOk ? "ready" : "failed");
     storageLog("storage", storageOk ? "ready" : "failed", storageOk ? "INFO" : "WARN");
 
+    if (appStorage.loadDeviceConfig(deviceConfig)) {
+      controller.applyConfig(makeAppControllerConfig());
+      bootLog("device config: sd");
+      storageLog("device_config", "loaded from sd");
+    } else {
+      bootLog("device config: built-in");
+      storageLog("device_config", "using built-in");
+    }
+
     size_t curveCount = 0;
     if (appStorage.loadBatteryCurve(sdBatteryCurve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
         battery.setBatteryCurve(sdBatteryCurve, curveCount)) {
@@ -232,11 +243,11 @@ void setup() {
   }
 
   bootLog("hub: configure client");
-  hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, kDeviceId);
-  hub.configureTelemetry(kHubTelemetryMs, kHubSyncIconMinMs);
-  hub.configureMessages(kHubMessageChannel, kHubMessagePollMs, kHubMessageLimit);
-  hub.configureWeather(kHubWeatherPollMs);
-  hub.configureTodos(kHubTodoPollMs, kHubTodoLimit);
+  hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, deviceConfig.deviceId);
+  hub.configureTelemetry(deviceConfig.hubTelemetryMs, kHubSyncIconMinMs);
+  hub.configureMessages(deviceConfig.messageChannel, deviceConfig.hubMessagePollMs, deviceConfig.hubMessageLimit);
+  hub.configureWeather(deviceConfig.hubWeatherPollMs);
+  hub.configureTodos(deviceConfig.hubTodoPollMs, deviceConfig.hubTodoLimit);
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
   bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
   storageLog("hub", hub.isConfigured() ? "configured" : "disabled", hub.isConfigured() ? "INFO" : "WARN");

@@ -41,6 +41,11 @@ void AppController::setBootScreenActive(bool active) {
   bootScreenActive_ = active;
 }
 
+void AppController::applyConfig(const AppControllerConfig& config) {
+  config_ = config;
+  markUiDirty();
+}
+
 void AppController::setSdMounted(bool mounted) {
   state_.sdMounted = mounted;
   refreshSdStats(true);
