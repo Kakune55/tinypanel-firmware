@@ -287,14 +287,16 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.batteryCurveFromSd = state_.batteryCurveFromSd;
   model.messagesRestoredFromSd = state_.messagesRestoredFromSd;
   model.batteryLogIntervalMs = config_.batteryLogIntervalMs;
-  model.systemPage = state_.systemPage;
+  model.selectedSystemMenuItem = state_.selectedSystemMenuItem;
   model.wifiConnected = wifi_.isConnected();
   model.wifiRssi = wifi_.rssi();
   model.wifiIp = wifi_.isConnected() ? wifi_.ipAddress() : "";
   model.wifiSsid = wifi_.ssid();
   model.uptimeMs = millis();
   model.freeHeap = ESP.getFreeHeap();
+  model.heapSize = ESP.getHeapSize();
   model.freePsram = ESP.getFreePsram();
+  model.psramSize = ESP.getPsramSize();
   model.batteryEtaMinutes = state_.batteryEtaMinutes;
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
@@ -697,9 +699,22 @@ void AppController::handleTodoDelete() {
 }
 
 void AppController::handleSystemKeyClick() {
-  state_.systemPage = (state_.systemPage + 1) % 2;
+  constexpr uint8_t kSystemMenuItemCount = 3;
+  state_.selectedSystemMenuItem = (state_.selectedSystemMenuItem + 1) % kSystemMenuItemCount;
   markUiDirty();
-  Serial.println("KEY: system page");
+  Serial.println("KEY: system menu");
+}
+
+void AppController::handleSystemAction() {
+  constexpr uint8_t kSystemMenuRefresh = 2;
+  if (state_.selectedSystemMenuItem != kSystemMenuRefresh) {
+    Serial.println("KEY: system action ignored");
+    return;
+  }
+
+  Serial.println("KEY: system refresh");
+  handleForcedRefresh();
+  markUiDirty();
 }
 
 void AppController::handleSingleKeyClick() {
@@ -739,7 +754,7 @@ void AppController::handleKeyDoubleClick() {
   }
 
   if (state_.page == DesktopClockPage::System) {
-    Serial.println("KEY: double ignored on system");
+    handleSystemAction();
     return;
   }
 
@@ -783,9 +798,7 @@ void AppController::handleButtons() {
         Serial.println("KEY: long ignored on this page");
         return;
       }
-      Serial.println("KEY: force network sync");
-      handleForcedRefresh();
-      markUiDirty();
+      Serial.println("KEY: long ignored on system");
     } else if (state_.newMessageAlert) {
       state_.pendingKeyClick = false;
       handleSingleKeyClick();

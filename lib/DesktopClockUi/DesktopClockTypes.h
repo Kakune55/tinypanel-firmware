@@ -37,14 +37,16 @@ struct DesktopClockUiModel {
   bool batteryCurveFromSd = false;
   bool messagesRestoredFromSd = false;
   uint32_t batteryLogIntervalMs = 0;
-  uint8_t systemPage = 0;
+  uint8_t selectedSystemMenuItem = 0;
   bool wifiConnected = false;
   int wifiRssi = 0;
   String wifiIp;
   String wifiSsid;
   uint32_t uptimeMs = 0;
   uint32_t freeHeap = 0;
+  uint32_t heapSize = 0;
   uint32_t freePsram = 0;
+  uint32_t psramSize = 0;
   int batteryEtaMinutes = -1;
   bool newMessageAlert = false;
   bool newMessageAlertInvert = false;

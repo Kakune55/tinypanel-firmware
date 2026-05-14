@@ -105,7 +105,7 @@ class AppController {
     bool batteryCurveFromSd = false;
     bool messagesRestoredFromSd = false;
     bool uiDirty = true;
-    uint8_t systemPage = 0;
+    uint8_t selectedSystemMenuItem = 0;
     uint32_t lastRtcMs = 0;
     uint32_t lastBatteryLogMs = 0;
     uint32_t lastSdStatsMs = 0;
@@ -162,6 +162,7 @@ class AppController {
   void handleTodoStatusToggle();
   void handleTodoDelete();
   void handleSystemKeyClick();
+  void handleSystemAction();
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();
