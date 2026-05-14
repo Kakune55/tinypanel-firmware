@@ -75,6 +75,8 @@ String bootLogLines[kBootLogLines];
 size_t bootLogCount = 0;
 StoredWifiCredentials sdWifiCredentials;
 WifiCredential appSecretsWifiCredential = {AppSecrets::WifiSsid, AppSecrets::WifiPassword};
+BatteryCurvePoint sdBatteryCurve[BatteryMonitor::MaxExternalCurvePoints];
+HubMessage sdCachedMessages[HubService::MaxMessages];
 
 void drawBootLog() {
   if (!display.isReady()) {
@@ -161,20 +163,18 @@ void setup() {
     const bool storageOk = appStorage.begin(sdCard);
     bootLogf("storage: %s", storageOk ? "ready" : "failed");
 
-    BatteryCurvePoint curve[BatteryMonitor::MaxExternalCurvePoints];
     size_t curveCount = 0;
-    if (appStorage.loadBatteryCurve(curve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
-        battery.setBatteryCurve(curve, curveCount)) {
+    if (appStorage.loadBatteryCurve(sdBatteryCurve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
+        battery.setBatteryCurve(sdBatteryCurve, curveCount)) {
       batteryCurveFromSd = true;
       bootLogf("battery curve: sd %u", static_cast<unsigned>(curveCount));
     } else {
       bootLog("battery curve: built-in");
     }
 
-    HubMessage cachedMessages[HubService::MaxMessages];
     size_t cachedMessageCount = 0;
-    if (appStorage.loadMessages(cachedMessages, HubService::MaxMessages, cachedMessageCount)) {
-      hub.setMessages(cachedMessages, cachedMessageCount);
+    if (appStorage.loadMessages(sdCachedMessages, HubService::MaxMessages, cachedMessageCount)) {
+      hub.setMessages(sdCachedMessages, cachedMessageCount);
       messagesRestoredFromSd = true;
       bootLogf("messages: cached %u", static_cast<unsigned>(cachedMessageCount));
     }

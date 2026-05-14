@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 
 #include "BatteryMonitor.h"
 #include "Shtc3Sensor.h"
@@ -216,4 +218,6 @@ private:
   size_t todoCount_ = 0;
   PendingTodoDelete pendingTodoDeletes_[MaxTodos];
   size_t pendingTodoDeleteCount_ = 0;
+  WiFiClient client_;
+  WiFiClientSecure secureClient_;
 };

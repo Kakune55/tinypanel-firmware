@@ -2,8 +2,6 @@
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <WiFiClient.h>
-#include <WiFiClientSecure.h>
 #include <cstring>
 
 namespace {
@@ -563,12 +561,10 @@ HubRequestResult HubService::requestJson(const char* method,
                                          const char* label) {
   HubRequestResult result;
   result.attempted = true;
-  WiFiClient client;
-  WiFiClientSecure secureClient;
-  WiFiClient* requestClient = &client;
+  WiFiClient* requestClient = &client_;
   if (baseUrl_.startsWith("https://")) {
-    secureClient.setInsecure();
-    requestClient = &secureClient;
+    secureClient_.setInsecure();
+    requestClient = &secureClient_;
   }
 
   HTTPClient http;
@@ -593,8 +589,8 @@ HubRequestResult HubService::requestJson(const char* method,
     result.statusCode = http.GET();
   }
   result.ok = result.statusCode >= 200 && result.statusCode < 300;
+  const String responseBody = http.getString();
   if (result.ok && response) {
-    const String responseBody = http.getString();
     DeserializationError error = deserializeJson(*response, responseBody);
     result.ok = !error;
     if (error) {
@@ -602,6 +598,9 @@ HubRequestResult HubService::requestJson(const char* method,
     }
   }
   Serial.printf("Hub: %s %s %s (%d)\n", label, method, result.ok ? "ok" : "failed", result.statusCode);
+  if (!result.ok && responseBody.length() > 0) {
+    Serial.printf("Hub: %s response: %.160s\n", label, responseBody.c_str());
+  }
   http.end();
   return result;
 }

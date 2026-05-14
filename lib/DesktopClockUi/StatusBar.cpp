@@ -61,6 +61,22 @@ void StatusBar::draw(const DesktopClockUiModel& model) {
   drawSignalBars(wifiX - gap - wifiBarsWidth, 8, model.wifiConnected, model.wifiRssi, kInk);
 
   cursorX = wifiX - gap - wifiBarsWidth - groupGap;
+  if (model.sdMounted) {
+    if (model.sdCardTotalMb > 0) {
+      const uint32_t usedPercent = (model.sdCardUsedMb * 100UL + model.sdCardTotalMb / 2UL) / model.sdCardTotalMb;
+      snprintf(text, sizeof(text), "%lu%%", static_cast<unsigned long>(usedPercent > 100UL ? 100UL : usedPercent));
+    } else {
+      snprintf(text, sizeof(text), "--");
+    }
+    const int sdTextWidth = static_cast<int>(std::strlen(text)) * 6;
+    const int sdIconWidth = PixelIcons::SDCard.width;
+    const int sdTextX = cursorX - sdTextWidth;
+    const int sdIconX = sdTextX - gap - sdIconWidth;
+    UiDraw::bitmapScaled(display_, sdIconX, 7, PixelIcons::SDCard, 1, kInk);
+    display_.drawText(sdTextX, 11, text, kInk, 1);
+    cursorX = sdIconX - groupGap;
+  }
+
   if (model.hubSyncing || model.hubSyncFailed) {
     const PixelIcons::Bitmap& hubIcon = model.hubSyncing ? PixelIcons::ServerSync : PixelIcons::ServerOffline;
     UiDraw::bitmapScaled(display_, cursorX - hubIcon.width, 8, hubIcon, 1, kInk);

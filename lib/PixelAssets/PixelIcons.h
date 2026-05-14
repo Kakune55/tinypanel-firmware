@@ -238,4 +238,27 @@ constexpr uint8_t WeatherUnknownData[] = {
 };
 constexpr Bitmap WeatherUnknown{WeatherUnknownData, 16, 16};
 
+// SD卡
+
+constexpr uint8_t SDCardData[] = {
+    0b00011111, 0b11110000,
+    0b00100000, 0b00010000,
+    0b01000101, 0b01010000,
+    0b01010101, 0b01010000,
+    0b01010101, 0b01010000,
+    0b01010101, 0b01010000,
+    0b01000000, 0b00010000,
+    0b01011101, 0b10010000,
+    0b01010001, 0b01010000,
+    0b01011101, 0b01010000,
+    0b01000101, 0b01010000,
+    0b01011101, 0b10010000,
+    0b01000000, 0b00010000,
+    0b01111111, 0b11110000,
+    0b00000000, 0b00000000,
+    0b00000000, 0b00000000,
+};
+
+constexpr Bitmap SDCard{SDCardData, 16, 16};
+
 }  // namespace PixelIcons
