@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "BatteryMonitor.h"
+#include "AppStorage.h"
 #include "Button.h"
 #include "DesktopClockUi.h"
 #include "HubService.h"
@@ -26,6 +27,7 @@ struct AppControllerConfig {
   uint32_t keyDoubleClickMs = 350;
   uint32_t keyLongPressMs = 1000;
   uint32_t newMessageBlinkMs = 500;
+  uint32_t batteryLogIntervalMs = 60UL * 1000UL;
   uint32_t loopDelayMs = 10;
 };
 
@@ -33,6 +35,7 @@ class AppController {
  public:
   AppController(const AppControllerConfig& config,
                 BatteryMonitor& battery,
+                AppStorage& storage,
                 Button& bootButton,
                 Button& keyButton,
                 HubService& hub,
@@ -46,6 +49,8 @@ class AppController {
 
   void setBootScreenActive(bool active);
   void setSdMounted(bool mounted);
+  void setWifiConfigured(bool configured);
+  void setStorageConfigStatus(bool wifiFromSd, bool batteryCurveFromSd, bool messagesRestoredFromSd);
   bool sdMounted() const;
   bool ntpSynced() const;
 
@@ -74,8 +79,13 @@ class AppController {
     bool ntpSyncing = false;
     bool ntpSyncFailed = false;
     bool sdMounted = false;
+    bool wifiConfigFromSd = false;
+    bool batteryCurveFromSd = false;
+    bool messagesRestoredFromSd = false;
     bool uiDirty = true;
+    uint8_t systemPage = 0;
     uint32_t lastRtcMs = 0;
+    uint32_t lastBatteryLogMs = 0;
     uint32_t lastWifiRetryMs = 0;
     uint32_t lastNtpAttemptMs = 0;
     uint32_t lastHubSyncWindowMs = 0;
@@ -115,6 +125,7 @@ class AppController {
   void handleTodoKeyClick();
   void handleTodoStatusToggle();
   void handleTodoDelete();
+  void handleSystemKeyClick();
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();
@@ -123,6 +134,7 @@ class AppController {
 
   AppControllerConfig config_;
   BatteryMonitor& battery_;
+  AppStorage& storage_;
   Button& bootButton_;
   Button& keyButton_;
   HubService& hub_;

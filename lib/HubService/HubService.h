@@ -152,6 +152,7 @@ public:
   size_t messageCount() const;
   const HubMessage* messages() const;
   const HubMessage* messageAt(size_t index) const;
+  bool setMessages(const HubMessage* messages, size_t count);
   const HubWeather& weather() const;
   size_t todoCount() const;
   const HubTodo* todos() const;

@@ -22,6 +22,8 @@ class SdCardStorage {
   uint64_t usedBytes() const;
 
   bool exists(const char* path) const;
+  bool makeDir(const char* path);
+  bool ensureDir(const char* path);
   bool writeText(const char* path, const String& text, bool append = false);
   bool readText(const char* path, String& out, size_t maxBytes = 4096) const;
   bool remove(const char* path);

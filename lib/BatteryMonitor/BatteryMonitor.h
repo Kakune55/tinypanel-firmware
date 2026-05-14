@@ -13,9 +13,18 @@ struct BatteryStatus {
   bool critical = false;
 };
 
+struct BatteryCurvePoint {
+  int rawAdc;
+  float percent;
+};
+
 class BatteryMonitor {
 public:
+  static constexpr size_t MaxExternalCurvePoints = 128;
+
   bool begin();
+  bool setBatteryCurve(const BatteryCurvePoint* points, size_t count);
+  void clearBatteryCurve();
   int readRawAdc(int samples = 16) const;
   float readRawVoltage(int samples = 16) const;
   float readVoltage(int samples = 16) const;
@@ -30,4 +39,6 @@ private:
   mutable int risingSamples_ = 0;
   mutable int fallingSamples_ = 0;
   mutable bool charging_ = false;
+  BatteryCurvePoint externalCurve_[MaxExternalCurvePoints];
+  size_t externalCurveCount_ = 0;
 };

@@ -6,11 +6,6 @@
 
 namespace {
 
-struct BatteryCurvePoint {
-  int rawAdc;
-  float percent;
-};
-
 constexpr BatteryCurvePoint kBatteryCurve[] = {
     {1655, 100.00f},
     {1650, 99.90f},
@@ -125,6 +120,31 @@ bool BatteryMonitor::begin() {
   return true;
 }
 
+bool BatteryMonitor::setBatteryCurve(const BatteryCurvePoint* points, size_t count) {
+  if (!points || count < 2 || count > MaxExternalCurvePoints) {
+    return false;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    if (points[i].percent < 0.0f || points[i].percent > 100.0f) {
+      return false;
+    }
+    if (i > 0 && points[i].rawAdc >= points[i - 1].rawAdc) {
+      return false;
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    externalCurve_[i] = points[i];
+  }
+  externalCurveCount_ = count;
+  return true;
+}
+
+void BatteryMonitor::clearBatteryCurve() {
+  externalCurveCount_ = 0;
+}
+
 int BatteryMonitor::readRawAdc(int samples) const {
   samples = std::max(1, samples);
   uint32_t sum = 0;
@@ -155,18 +175,22 @@ float BatteryMonitor::readVoltage(int samples) const {
 }
 
 float BatteryMonitor::percentFromRawAdc(int rawAdc) const {
-  if (rawAdc >= kBatteryCurve[0].rawAdc) {
+  const BatteryCurvePoint* curve = externalCurveCount_ >= 2 ? externalCurve_ : kBatteryCurve;
+  const size_t curveCount =
+      externalCurveCount_ >= 2 ? externalCurveCount_ : sizeof(kBatteryCurve) / sizeof(kBatteryCurve[0]);
+
+  if (rawAdc >= curve[0].rawAdc) {
     return 100.0f;
   }
 
-  constexpr size_t lastIndex = sizeof(kBatteryCurve) / sizeof(kBatteryCurve[0]) - 1;
-  if (rawAdc <= kBatteryCurve[lastIndex].rawAdc) {
+  const size_t lastIndex = curveCount - 1;
+  if (rawAdc <= curve[lastIndex].rawAdc) {
     return 0.0f;
   }
 
   for (size_t i = 0; i < lastIndex; ++i) {
-    const auto high = kBatteryCurve[i];
-    const auto low = kBatteryCurve[i + 1];
+    const auto high = curve[i];
+    const auto low = curve[i + 1];
     if (rawAdc <= high.rawAdc && rawAdc >= low.rawAdc) {
       const float t = (rawAdc - low.rawAdc) / static_cast<float>(high.rawAdc - low.rawAdc);
       return low.percent + t * (high.percent - low.percent);

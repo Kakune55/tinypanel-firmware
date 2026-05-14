@@ -479,6 +479,59 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   display.clear(true);
   statusBar.draw(model);
 
+  if (model.systemPage == 1) {
+    constexpr int leftX = 16;
+    constexpr int rightX = 212;
+    constexpr int topY = 42;
+
+    display.drawText(leftX, topY, "SD CARD", true, 2);
+    snprintf(text, sizeof(text), "MOUNT %s", model.sdMounted ? "YES" : "NO");
+    display.drawText(leftX, topY + 30, text, true, 1);
+
+    snprintf(text, sizeof(text), "STORE %s", model.storageReady ? "READY" : "OFF");
+    display.drawText(leftX, topY + 48, text, true, 1);
+
+    snprintf(text, sizeof(text), "STATUS %s", model.sdStatus);
+    display.drawText(leftX, topY + 66, text, true, 1);
+
+    snprintf(text, sizeof(text), "SIZE %luMB", static_cast<unsigned long>(model.sdCardTotalMb));
+    display.drawText(leftX, topY + 88, text, true, 1);
+
+    snprintf(text, sizeof(text), "USED %luMB", static_cast<unsigned long>(model.sdCardUsedMb));
+    display.drawText(leftX, topY + 106, text, true, 1);
+
+    snprintf(text, sizeof(text), "LOG %lus", static_cast<unsigned long>(model.batteryLogIntervalMs / 1000UL));
+    display.drawText(leftX, topY + 128, text, true, 1);
+
+    display.drawText(rightX, topY, "CONFIG", true, 2);
+    snprintf(text,
+             sizeof(text),
+             "WIFI %s",
+             model.wifiConfigFromSd ? "SD" : (model.wifiConfigured ? "SECRET" : "NONE"));
+    display.drawText(rightX, topY + 30, text, true, 1);
+
+    snprintf(text, sizeof(text), "CURVE %s", model.batteryCurveFromSd ? "SD" : "BUILTIN");
+    display.drawText(rightX, topY + 48, text, true, 1);
+
+    snprintf(text, sizeof(text), "MSG CACHE %s", model.messagesRestoredFromSd ? "LOAD" : "WAIT");
+    display.drawText(rightX, topY + 66, text, true, 1);
+
+    snprintf(text, sizeof(text), "MSG %u TODO %u", static_cast<unsigned>(model.messageCount),
+             static_cast<unsigned>(model.todoCount));
+    display.drawText(rightX, topY + 88, text, true, 1);
+
+    display.drawText(rightX, topY + 116, "/config/wifi.json", true, 1);
+    display.drawText(rightX, topY + 134, "/calib/battery_", true, 1);
+    display.drawText(rightX, topY + 152, "curve.csv", true, 1);
+    display.drawText(rightX, topY + 174, "/cache/messages", true, 1);
+
+    display.drawText(24, 270, "KEY PAGE", true, 1);
+    display.drawText(132, 270, "HOLD REFRESH", true, 1);
+    display.drawText(286, 270, "BOOT NEXT", true, 1);
+    drawPageDots(display, model.page);
+    return;
+  }
+
   constexpr int leftX = 16;
   constexpr int rightX = 212;
   constexpr int topY = 42;
@@ -541,7 +594,8 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
            static_cast<unsigned long>((model.uptimeMs / 60000UL) % 60UL));
   display.drawText(leftX, topY + 164, text, true, 1);
 
-  display.drawText(24, 270, "KEY REFRESH", true, 1);
+  display.drawText(24, 270, "KEY PAGE", true, 1);
+  display.drawText(132, 270, "HOLD REFRESH", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }

@@ -247,6 +247,18 @@ const HubMessage* HubService::messageAt(size_t index) const {
   return index < messageCount_ ? &messages_[index] : nullptr;
 }
 
+bool HubService::setMessages(const HubMessage* messages, size_t count) {
+  if (!messages && count > 0) {
+    return false;
+  }
+
+  messageCount_ = count < MaxMessages ? count : MaxMessages;
+  for (size_t i = 0; i < messageCount_; ++i) {
+    messages_[i] = messages[i];
+  }
+  return true;
+}
+
 const HubWeather& HubService::weather() const {
   return weather_;
 }

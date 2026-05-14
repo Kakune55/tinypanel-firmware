@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include <cstdarg>
+#include <cstring>
 
 #include "AppController.h"
+#include "AppStorage.h"
 #include "BoardConfig.h"
 #include "I2cScanner.h"
 #include "WifiCredential.h"
@@ -12,8 +14,8 @@
 #else
 #define APP_HAS_WIFI_SECRETS 0
 namespace AppSecrets {
-constexpr WifiCredential WifiCredentials[] = {};
-constexpr size_t WifiCredentialCount = 0;
+constexpr const char* WifiSsid = "";
+constexpr const char* WifiPassword = "";
 constexpr const char* HubServerBaseURL = "";
 constexpr const char* HubServerApiKey = "";
 }  // namespace AppSecrets
@@ -34,6 +36,7 @@ constexpr const char* kHubMessageChannel = "desk";
 constexpr size_t kBootLogLines = 12;
 
 BatteryMonitor battery;
+AppStorage appStorage;
 Button bootButton(BoardConfig::ButtonBoot);
 Button keyButton(BoardConfig::ButtonKey);
 HubService hub;
@@ -56,6 +59,7 @@ AppControllerConfig makeAppControllerConfig() {
 
 AppController controller(makeAppControllerConfig(),
                          battery,
+                         appStorage,
                          bootButton,
                          keyButton,
                          hub,
@@ -69,6 +73,8 @@ AppController controller(makeAppControllerConfig(),
 
 String bootLogLines[kBootLogLines];
 size_t bootLogCount = 0;
+StoredWifiCredentials sdWifiCredentials;
+WifiCredential appSecretsWifiCredential = {AppSecrets::WifiSsid, AppSecrets::WifiPassword};
 
 void drawBootLog() {
   if (!display.isReady()) {
@@ -149,13 +155,47 @@ void setup() {
   controller.setSdMounted(sdCard.begin());
   sdCard.printInfo(Serial);
   bootLogf("sd: %s", controller.sdMounted() ? "mounted" : sdCard.lastErrorText());
+  bool batteryCurveFromSd = false;
+  bool messagesRestoredFromSd = false;
+  if (controller.sdMounted()) {
+    const bool storageOk = appStorage.begin(sdCard);
+    bootLogf("storage: %s", storageOk ? "ready" : "failed");
 
-  if (APP_HAS_WIFI_SECRETS) {
+    BatteryCurvePoint curve[BatteryMonitor::MaxExternalCurvePoints];
+    size_t curveCount = 0;
+    if (appStorage.loadBatteryCurve(curve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
+        battery.setBatteryCurve(curve, curveCount)) {
+      batteryCurveFromSd = true;
+      bootLogf("battery curve: sd %u", static_cast<unsigned>(curveCount));
+    } else {
+      bootLog("battery curve: built-in");
+    }
+
+    HubMessage cachedMessages[HubService::MaxMessages];
+    size_t cachedMessageCount = 0;
+    if (appStorage.loadMessages(cachedMessages, HubService::MaxMessages, cachedMessageCount)) {
+      hub.setMessages(cachedMessages, cachedMessageCount);
+      messagesRestoredFromSd = true;
+      bootLogf("messages: cached %u", static_cast<unsigned>(cachedMessageCount));
+    }
+  }
+
+  const bool sdWifiOk = appStorage.loadWifiCredentials(sdWifiCredentials);
+  const bool appSecretsWifiOk = AppSecrets::WifiSsid[0] != '\0' && strncmp(AppSecrets::WifiSsid, "YOUR_", 5) != 0;
+  const WifiCredential* wifiCredentials = sdWifiOk ? sdWifiCredentials.credentials : &appSecretsWifiCredential;
+  const size_t wifiCredentialCount = sdWifiOk ? sdWifiCredentials.count : (appSecretsWifiOk ? 1 : 0);
+  controller.setWifiConfigured(wifiCredentialCount > 0);
+  controller.setStorageConfigStatus(sdWifiOk, batteryCurveFromSd, messagesRestoredFromSd);
+
+  if (wifiCredentialCount > 0) {
     bootLog("wifi: connect timeout 12s");
-    const bool wifiOk = wifi.begin(AppSecrets::WifiCredentials, AppSecrets::WifiCredentialCount, 12000);
+    const bool wifiOk = wifi.begin(wifiCredentials, wifiCredentialCount, 12000);
     bootLogf("wifi: %s", wifiOk ? wifi.ipAddress().c_str() : "failed");
+    if (sdWifiOk) {
+      Serial.println("WiFi: loaded credentials from SD");
+    }
   } else {
-    Serial.println("WiFi: create include/AppSecrets.h from AppSecrets.example.h to enable network");
+    Serial.println("WiFi: create include/AppSecrets.h or /tinypanel/config/wifi.json to enable network");
     bootLog("wifi: not configured");
   }
 

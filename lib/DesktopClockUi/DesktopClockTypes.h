@@ -29,6 +29,15 @@ struct DesktopClockUiModel {
   bool hubSyncFailed = false;
   bool sdMounted = false;
   const char* sdStatus = "NO CARD";
+  bool storageReady = false;
+  uint32_t sdCardTotalMb = 0;
+  uint32_t sdCardUsedMb = 0;
+  bool wifiConfigured = false;
+  bool wifiConfigFromSd = false;
+  bool batteryCurveFromSd = false;
+  bool messagesRestoredFromSd = false;
+  uint32_t batteryLogIntervalMs = 0;
+  uint8_t systemPage = 0;
   bool wifiConnected = false;
   int wifiRssi = 0;
   String wifiIp;

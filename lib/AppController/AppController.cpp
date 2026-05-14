@@ -10,6 +10,7 @@ AppController* activeController = nullptr;
 
 AppController::AppController(const AppControllerConfig& config,
                              BatteryMonitor& battery,
+                             AppStorage& storage,
                              Button& bootButton,
                              Button& keyButton,
                              HubService& hub,
@@ -22,6 +23,7 @@ AppController::AppController(const AppControllerConfig& config,
                              DesktopClockUi& ui)
     : config_(config),
       battery_(battery),
+      storage_(storage),
       bootButton_(bootButton),
       keyButton_(keyButton),
       hub_(hub),
@@ -44,6 +46,18 @@ void AppController::setSdMounted(bool mounted) {
   markUiDirty();
 }
 
+void AppController::setWifiConfigured(bool configured) {
+  config_.wifiConfigured = configured;
+  markUiDirty();
+}
+
+void AppController::setStorageConfigStatus(bool wifiFromSd, bool batteryCurveFromSd, bool messagesRestoredFromSd) {
+  state_.wifiConfigFromSd = wifiFromSd;
+  state_.batteryCurveFromSd = batteryCurveFromSd;
+  state_.messagesRestoredFromSd = messagesRestoredFromSd;
+  markUiDirty();
+}
+
 bool AppController::sdMounted() const {
   return state_.sdMounted;
 }
@@ -57,6 +71,13 @@ void AppController::readSensors(bool force) {
   shtc3_.read(state_.environment);
   readRtc(force);
   updateBatteryRuntimeEstimate();
+  const uint32_t nowMs = millis();
+  if (storage_.isReady() &&
+      (force || state_.lastBatteryLogMs == 0 || nowMs - state_.lastBatteryLogMs >= config_.batteryLogIntervalMs)) {
+    if (storage_.appendBatterySample(state_.battery, state_.now, nowMs / 1000UL)) {
+      state_.lastBatteryLogMs = nowMs;
+    }
+  }
   markUiDirty();
 }
 
@@ -137,6 +158,7 @@ void AppController::pollHubMessages(bool force) {
   if (hub_.messageCount() != before) {
     state_.selectedMessage = 0;
     state_.messageBodyScrollLine = 0;
+    storage_.saveMessages(hub_.messages(), hub_.messageCount());
     if (state_.page != DesktopClockPage::Message) {
       state_.newMessageAlert = true;
     }
@@ -245,6 +267,15 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.hubSyncFailed = hub_.hasFailed();
   model.sdMounted = state_.sdMounted;
   model.sdStatus = sdCard_.lastErrorText();
+  model.storageReady = storage_.isReady();
+  model.sdCardTotalMb = sdCard_.cardSizeBytes() / (1024UL * 1024UL);
+  model.sdCardUsedMb = sdCard_.usedBytes() / (1024UL * 1024UL);
+  model.wifiConfigured = config_.wifiConfigured;
+  model.wifiConfigFromSd = state_.wifiConfigFromSd;
+  model.batteryCurveFromSd = state_.batteryCurveFromSd;
+  model.messagesRestoredFromSd = state_.messagesRestoredFromSd;
+  model.batteryLogIntervalMs = config_.batteryLogIntervalMs;
+  model.systemPage = state_.systemPage;
   model.wifiConnected = wifi_.isConnected();
   model.wifiRssi = wifi_.rssi();
   model.wifiIp = wifi_.isConnected() ? wifi_.ipAddress() : "";
@@ -533,6 +564,12 @@ void AppController::handleTodoDelete() {
   }
 }
 
+void AppController::handleSystemKeyClick() {
+  state_.systemPage = (state_.systemPage + 1) % 2;
+  markUiDirty();
+  Serial.println("KEY: system page");
+}
+
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
@@ -560,13 +597,7 @@ void AppController::handleSingleKeyClick() {
     return;
   }
 
-  Serial.println("KEY: manual refresh");
-  if (!sdCard_.isMounted()) {
-    setSdMounted(sdCard_.begin());
-    sdCard_.printInfo(Serial);
-  }
-  runScheduledTasks(true, false);
-  markUiDirty();
+  handleSystemKeyClick();
 }
 
 void AppController::handleKeyDoubleClick() {
@@ -623,6 +654,9 @@ void AppController::handleButtons() {
       Serial.println("KEY: force network sync");
       if (!sdCard_.isMounted()) {
         setSdMounted(sdCard_.begin());
+        if (sdCard_.isMounted()) {
+          storage_.begin(sdCard_);
+        }
         sdCard_.printInfo(Serial);
       }
     }

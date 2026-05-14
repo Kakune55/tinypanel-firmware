@@ -1,6 +1,7 @@
 #include "SdCardStorage.h"
 
 #include <BoardConfig.h>
+#include <cstring>
 #include <dirent.h>
 #include <esp_vfs_fat.h>
 #include <ff.h>
@@ -93,6 +94,60 @@ bool SdCardStorage::exists(const char* path) const {
 
   struct stat st = {};
   return stat(absolutePath(path).c_str(), &st) == 0;
+}
+
+bool SdCardStorage::makeDir(const char* path) {
+  if (!isReady()) {
+    setErrorText("not mounted");
+    return false;
+  }
+
+  const String fullPath = absolutePath(path);
+  struct stat st = {};
+  if (stat(fullPath.c_str(), &st) == 0) {
+    const bool ok = S_ISDIR(st.st_mode);
+    setErrorText(ok ? "ok" : "not a dir");
+    return ok;
+  }
+
+  const bool ok = mkdir(fullPath.c_str(), 0755) == 0;
+  setErrorText(ok ? "ok" : "mkdir failed");
+  return ok;
+}
+
+bool SdCardStorage::ensureDir(const char* path) {
+  if (!isReady()) {
+    setErrorText("not mounted");
+    return false;
+  }
+  if (!path || path[0] == '\0' || strcmp(path, "/") == 0) {
+    setErrorText("ok");
+    return true;
+  }
+
+  String value(path);
+  if (!value.startsWith("/")) {
+    value = "/" + value;
+  }
+  while (value.length() > 1 && value.endsWith("/")) {
+    value.remove(value.length() - 1);
+  }
+
+  int start = 1;
+  while (start < static_cast<int>(value.length())) {
+    int slash = value.indexOf('/', start);
+    String part = slash < 0 ? value : value.substring(0, slash);
+    if (!makeDir(part.c_str())) {
+      return false;
+    }
+    if (slash < 0) {
+      break;
+    }
+    start = slash + 1;
+  }
+
+  setErrorText("ok");
+  return true;
 }
 
 bool SdCardStorage::writeText(const char* path, const String& text, bool append) {
