@@ -28,6 +28,7 @@ struct AppControllerConfig {
   uint32_t keyLongPressMs = 1000;
   uint32_t newMessageBlinkMs = 500;
   uint32_t batteryLogIntervalMs = 60UL * 1000UL;
+  uint32_t sdStatsRefreshMs = 30000;
   uint32_t loopDelayMs = 10;
 };
 
@@ -66,6 +67,26 @@ class AppController {
 
  private:
   struct State {
+    enum class InitialHubSyncStep : uint8_t {
+      Telemetry,
+      Weather,
+      Messages,
+      Todos,
+      Done,
+    };
+
+    enum class ScheduledTaskStep : uint8_t {
+      Idle,
+      WifiSignal,
+      Ntp,
+      Sensors,
+      Messages,
+      TodoSync,
+      Todos,
+      Weather,
+      Telemetry,
+    };
+
     struct BatteryHistoryPoint {
       uint32_t uptimeS = 0;
       float percent = 0.0f;
@@ -86,6 +107,9 @@ class AppController {
     uint8_t systemPage = 0;
     uint32_t lastRtcMs = 0;
     uint32_t lastBatteryLogMs = 0;
+    uint32_t lastSdStatsMs = 0;
+    uint32_t sdCardTotalMb = 0;
+    uint32_t sdCardUsedMb = 0;
     uint32_t lastWifiRetryMs = 0;
     uint32_t lastNtpAttemptMs = 0;
     uint32_t lastHubSyncWindowMs = 0;
@@ -99,6 +123,11 @@ class AppController {
     String bootId;
     size_t selectedTodo = 0;
     uint8_t hubSyncWindowCount = 0;
+    InitialHubSyncStep initialHubSyncStep = InitialHubSyncStep::Telemetry;
+    ScheduledTaskStep scheduledTaskStep = ScheduledTaskStep::Idle;
+    bool scheduledTaskForce = false;
+    bool scheduledTaskIncludeTelemetry = false;
+    bool scheduledTaskTodoSyncOk = true;
     static constexpr size_t BatteryHistorySize = 180;
     BatteryHistoryPoint batteryHistory[BatteryHistorySize];
     size_t batteryHistoryCount = 0;
@@ -118,6 +147,12 @@ class AppController {
   void handleWifi();
   void readRtc(bool force = false);
   void runScheduledTasks(bool force = false, bool includeTelemetry = false);
+  bool runNextInitialHubSyncStep();
+  bool runNextScheduledTask();
+  void queueScheduledTasks(bool force, bool includeTelemetry);
+  void refreshSdStats(bool force = false);
+  void handleForcedRefresh();
+  void updateSelectedTodoAfterChange();
   void updateBatteryRuntimeEstimate();
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;

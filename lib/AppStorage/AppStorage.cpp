@@ -88,7 +88,7 @@ bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
 
   String text;
   serializeJson(doc, text);
-  return sd_->writeText(MessagesPath, text);
+  return sd_->writeTextAtomic(MessagesPath, text);
 }
 
 bool AppStorage::loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const {
@@ -171,19 +171,17 @@ bool AppStorage::appendBatterySample(const BatteryStatus& battery, const RtcDate
     sd_->appendLine(path.c_str(), "timestamp,uptime_s,raw_adc,raw_voltage_mv,voltage,percent,charging");
   }
 
-  String line = timestampOrUptime(now, uptimeS);
-  line += ",";
-  line += String(uptimeS);
-  line += ",";
-  line += String(battery.rawAdc);
-  line += ",";
-  line += String(battery.rawVoltageMv);
-  line += ",";
-  line += String(battery.voltage, 3);
-  line += ",";
-  line += String(battery.percentFloat, 2);
-  line += ",";
-  line += battery.charging ? "1" : "0";
+  char line[96];
+  snprintf(line,
+           sizeof(line),
+           "%s,%lu,%d,%lu,%.3f,%.2f,%d",
+           timestampOrUptime(now, uptimeS).c_str(),
+           static_cast<unsigned long>(uptimeS),
+           battery.rawAdc,
+           static_cast<unsigned long>(battery.rawVoltageMv),
+           battery.voltage,
+           battery.percentFloat,
+           battery.charging ? 1 : 0);
   return sd_->appendLine(path.c_str(), line);
 }
 

@@ -43,6 +43,7 @@ void AppController::setBootScreenActive(bool active) {
 
 void AppController::setSdMounted(bool mounted) {
   state_.sdMounted = mounted;
+  refreshSdStats(true);
   markUiDirty();
 }
 
@@ -176,12 +177,7 @@ void AppController::pollWeather(bool force) {
 void AppController::pollTodos(bool force) {
   const HubRequestResult result = hub_.pollTodos(force, wifi_.isConnected(), handleHubStateChanged);
   if (result.attempted) {
-    const size_t count = hub_.todoCount();
-    if (count == 0) {
-      state_.selectedTodo = 0;
-    } else if (state_.selectedTodo >= count) {
-      state_.selectedTodo = count - 1;
-    }
+    updateSelectedTodoAfterChange();
     markUiDirty();
   }
 }
@@ -191,7 +187,12 @@ void AppController::loopOnce() {
   handlePendingKeyClick();
   handleWifi();
   readRtc(false);
+  refreshSdStats(false);
   runScheduledTasks(false);
+  const bool didInitialHubWork = runNextInitialHubSyncStep();
+  if (!didInitialHubWork) {
+    runNextScheduledTask();
+  }
 
   if (hub_.update()) {
     markUiDirty();
@@ -268,8 +269,8 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.sdMounted = state_.sdMounted;
   model.sdStatus = sdCard_.lastErrorText();
   model.storageReady = storage_.isReady();
-  model.sdCardTotalMb = sdCard_.cardSizeBytes() / (1024UL * 1024UL);
-  model.sdCardUsedMb = sdCard_.usedBytes() / (1024UL * 1024UL);
+  model.sdCardTotalMb = state_.sdCardTotalMb;
+  model.sdCardUsedMb = state_.sdCardUsedMb;
   model.wifiConfigured = config_.wifiConfigured;
   model.wifiConfigFromSd = state_.wifiConfigFromSd;
   model.batteryCurveFromSd = state_.batteryCurveFromSd;
@@ -319,6 +320,12 @@ void AppController::handleWifi() {
 
 void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
   const uint32_t now = millis();
+  if (state_.scheduledTaskStep != State::ScheduledTaskStep::Idle) {
+    if (force) {
+      queueScheduledTasks(true, includeTelemetry);
+    }
+    return;
+  }
   if (!force && state_.lastHubSyncWindowMs == 0) {
     state_.lastHubSyncWindowMs = now;
     return;
@@ -328,27 +335,8 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
   }
 
   state_.lastHubSyncWindowMs = now;
-  wifi_.updateSignal();
-  trySyncTime(false);
-  readSensors(true);
-  pollHubMessages(force);
-  HubRequestResult todoSync = hub_.syncTodoChanges(wifi_.isConnected(), handleHubStateChanged);
-  if (todoSync.attempted) {
-    const size_t count = hub_.todoCount();
-    if (count == 0) {
-      state_.selectedTodo = 0;
-    } else if (state_.selectedTodo >= count) {
-      state_.selectedTodo = count - 1;
-    }
-    markUiDirty();
-  }
-  if (!todoSync.attempted || todoSync.ok) {
-    pollTodos(force);
-  }
-  pollWeather(force);
-
-  const uint8_t telemetryWindows = config_.telemetryEveryHubSyncWindows;
   bool telemetryDue = includeTelemetry;
+  const uint8_t telemetryWindows = config_.telemetryEveryHubSyncWindows;
   if (!telemetryDue && telemetryWindows > 0) {
     ++state_.hubSyncWindowCount;
     if (state_.hubSyncWindowCount >= telemetryWindows) {
@@ -357,8 +345,141 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
     }
   }
 
-  if (telemetryDue) {
-    syncHubTelemetry(true);
+  queueScheduledTasks(force, telemetryDue);
+}
+
+bool AppController::runNextInitialHubSyncStep() {
+  if (bootScreenActive_ || state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
+    return false;
+  }
+
+  switch (state_.initialHubSyncStep) {
+    case State::InitialHubSyncStep::Telemetry:
+      syncHubTelemetry(true);
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Weather;
+      return true;
+    case State::InitialHubSyncStep::Weather:
+      pollWeather(true);
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Messages;
+      return true;
+    case State::InitialHubSyncStep::Messages:
+      pollHubMessages(true);
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Todos;
+      return true;
+    case State::InitialHubSyncStep::Todos:
+      pollTodos(true);
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
+      return true;
+    case State::InitialHubSyncStep::Done:
+      break;
+  }
+  return false;
+}
+
+bool AppController::runNextScheduledTask() {
+  switch (state_.scheduledTaskStep) {
+    case State::ScheduledTaskStep::Idle:
+      return false;
+    case State::ScheduledTaskStep::WifiSignal:
+      wifi_.updateSignal();
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Ntp;
+      return true;
+    case State::ScheduledTaskStep::Ntp:
+      trySyncTime(state_.scheduledTaskForce);
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Sensors;
+      return true;
+    case State::ScheduledTaskStep::Sensors:
+      readSensors(true);
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Messages;
+      return true;
+    case State::ScheduledTaskStep::Messages:
+      pollHubMessages(state_.scheduledTaskForce);
+      state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
+      return true;
+    case State::ScheduledTaskStep::TodoSync: {
+      HubRequestResult todoSync = hub_.syncTodoChanges(wifi_.isConnected(), handleHubStateChanged);
+      state_.scheduledTaskTodoSyncOk = !todoSync.attempted || todoSync.ok;
+      if (todoSync.attempted) {
+        updateSelectedTodoAfterChange();
+        markUiDirty();
+      }
+      state_.scheduledTaskStep =
+          state_.scheduledTaskTodoSyncOk ? State::ScheduledTaskStep::Todos : State::ScheduledTaskStep::Weather;
+      return true;
+    }
+    case State::ScheduledTaskStep::Todos:
+      pollTodos(state_.scheduledTaskForce);
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Weather;
+      return true;
+    case State::ScheduledTaskStep::Weather:
+      pollWeather(state_.scheduledTaskForce);
+      if (state_.scheduledTaskIncludeTelemetry) {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::Telemetry;
+      } else {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::Idle;
+        state_.scheduledTaskForce = false;
+        state_.scheduledTaskIncludeTelemetry = false;
+        state_.scheduledTaskTodoSyncOk = true;
+      }
+      return true;
+    case State::ScheduledTaskStep::Telemetry:
+      syncHubTelemetry(true);
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Idle;
+      state_.scheduledTaskForce = false;
+      state_.scheduledTaskIncludeTelemetry = false;
+      state_.scheduledTaskTodoSyncOk = true;
+      return true;
+  }
+  return false;
+}
+
+void AppController::queueScheduledTasks(bool force, bool includeTelemetry) {
+  state_.scheduledTaskForce = force;
+  state_.scheduledTaskIncludeTelemetry = includeTelemetry;
+  state_.scheduledTaskTodoSyncOk = true;
+  state_.scheduledTaskStep = State::ScheduledTaskStep::WifiSignal;
+  markUiDirty();
+}
+
+void AppController::refreshSdStats(bool force) {
+  const uint32_t now = millis();
+  if (!force && now - state_.lastSdStatsMs < config_.sdStatsRefreshMs) {
+    return;
+  }
+
+  state_.lastSdStatsMs = now;
+  if (!sdCard_.isMounted()) {
+    state_.sdCardTotalMb = 0;
+    state_.sdCardUsedMb = 0;
+    return;
+  }
+
+  state_.sdCardTotalMb = sdCard_.cardSizeBytes() / (1024UL * 1024UL);
+  state_.sdCardUsedMb = sdCard_.usedBytes() / (1024UL * 1024UL);
+  markUiDirty();
+}
+
+void AppController::handleForcedRefresh() {
+  if (!sdCard_.isMounted()) {
+    setSdMounted(sdCard_.begin());
+    if (sdCard_.isMounted()) {
+      storage_.begin(sdCard_);
+    }
+    sdCard_.printInfo(Serial);
+  }
+  refreshSdStats(true);
+  if (!wifi_.isConnected() && config_.wifiConfigured) {
+    wifi_.connect(8000);
+  }
+  queueScheduledTasks(true, true);
+}
+
+void AppController::updateSelectedTodoAfterChange() {
+  const size_t count = hub_.todoCount();
+  if (count == 0) {
+    state_.selectedTodo = 0;
+  } else if (state_.selectedTodo >= count) {
+    state_.selectedTodo = count - 1;
   }
 }
 
@@ -492,8 +613,8 @@ HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {
   snapshot.ntpSync = state_.ntpSynced;
 
   snapshot.sdCardPresent = sdCard_.isMounted();
-  snapshot.sdCardTotalMb = sdCard_.cardSizeBytes() / (1024UL * 1024UL);
-  snapshot.sdCardUsedMb = sdCard_.usedBytes() / (1024UL * 1024UL);
+  snapshot.sdCardTotalMb = state_.sdCardTotalMb;
+  snapshot.sdCardUsedMb = state_.sdCardUsedMb;
   return snapshot;
 }
 
@@ -652,20 +773,7 @@ void AppController::handleButtons() {
         return;
       }
       Serial.println("KEY: force network sync");
-      if (!sdCard_.isMounted()) {
-        setSdMounted(sdCard_.begin());
-        if (sdCard_.isMounted()) {
-          storage_.begin(sdCard_);
-        }
-        sdCard_.printInfo(Serial);
-      }
-    }
-    if (longPress && !wifi_.isConnected() && config_.wifiConfigured) {
-      wifi_.connect(8000);
-    }
-    if (longPress) {
-      trySyncTime(true);
-      runScheduledTasks(true, true);
+      handleForcedRefresh();
       markUiDirty();
     } else if (state_.newMessageAlert) {
       state_.pendingKeyClick = false;

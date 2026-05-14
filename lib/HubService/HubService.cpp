@@ -63,6 +63,10 @@ void HubService::configureTodos(uint32_t pollIntervalMs, uint8_t limit) {
   }
 }
 
+void HubService::setVerbose(bool verbose) {
+  verbose_ = verbose;
+}
+
 bool HubService::isSyncing() const {
   return syncState_ == HubSyncState::Syncing;
 }
@@ -598,7 +602,7 @@ HubRequestResult HubService::requestJson(const char* method,
     }
   }
   Serial.printf("Hub: %s %s %s (%d)\n", label, method, result.ok ? "ok" : "failed", result.statusCode);
-  if (!result.ok && responseBody.length() > 0) {
+  if (verbose_ && !result.ok && responseBody.length() > 0) {
     Serial.printf("Hub: %s response: %.160s\n", label, responseBody.c_str());
   }
   http.end();

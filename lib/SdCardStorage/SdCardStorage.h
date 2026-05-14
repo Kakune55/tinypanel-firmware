@@ -25,6 +25,7 @@ class SdCardStorage {
   bool makeDir(const char* path);
   bool ensureDir(const char* path);
   bool writeText(const char* path, const String& text, bool append = false);
+  bool writeTextAtomic(const char* path, const String& text);
   bool readText(const char* path, String& out, size_t maxBytes = 4096) const;
   bool remove(const char* path);
   bool appendLine(const char* path, const String& line);

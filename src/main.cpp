@@ -218,10 +218,6 @@ void setup() {
   bootLog("ui: start desktop");
   controller.setBootScreenActive(false);
   controller.renderUi();
-  controller.syncHubTelemetry(true);
-  controller.pollWeather(true);
-  controller.pollHubMessages(true);
-  controller.pollTodos(true);
 }
 
 void loop() {

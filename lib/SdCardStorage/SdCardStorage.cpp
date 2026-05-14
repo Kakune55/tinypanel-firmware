@@ -174,6 +174,47 @@ bool SdCardStorage::writeText(const char* path, const String& text, bool append)
   return true;
 }
 
+bool SdCardStorage::writeTextAtomic(const char* path, const String& text) {
+  if (!isReady()) {
+    setErrorText("not mounted");
+    return false;
+  }
+  if (!path || path[0] == '\0') {
+    setErrorText("bad path");
+    return false;
+  }
+
+  const String targetPath = absolutePath(path);
+  const String tempPath = targetPath + ".tmp";
+  FILE* file = fopen(tempPath.c_str(), "wb");
+  if (!file) {
+    setErrorText("open failed");
+    return false;
+  }
+
+  const size_t written = fwrite(text.c_str(), 1, text.length(), file);
+  const int flushResult = fflush(file);
+  fsync(fileno(file));
+  const int closeResult = fclose(file);
+  if (written != text.length() || flushResult != 0 || closeResult != 0) {
+    unlink(tempPath.c_str());
+    setErrorText("write failed");
+    return false;
+  }
+
+  if (rename(tempPath.c_str(), targetPath.c_str()) != 0) {
+    unlink(targetPath.c_str());
+    if (rename(tempPath.c_str(), targetPath.c_str()) != 0) {
+      unlink(tempPath.c_str());
+      setErrorText("rename failed");
+      return false;
+    }
+  }
+
+  setErrorText("ok");
+  return true;
+}
+
 bool SdCardStorage::readText(const char* path, String& out, size_t maxBytes) const {
   out = "";
   if (!isReady()) {
@@ -185,14 +226,17 @@ bool SdCardStorage::readText(const char* path, String& out, size_t maxBytes) con
     return false;
   }
 
+  out.reserve(maxBytes);
+  char buffer[256];
   size_t readBytes = 0;
   while (readBytes < maxBytes) {
-    int c = fgetc(file);
-    if (c == EOF) {
+    const size_t toRead = min(sizeof(buffer), maxBytes - readBytes);
+    const size_t got = fread(buffer, 1, toRead, file);
+    if (got == 0) {
       break;
     }
-    out += static_cast<char>(c);
-    ++readBytes;
+    out.concat(buffer, got);
+    readBytes += got;
   }
 
   fclose(file);

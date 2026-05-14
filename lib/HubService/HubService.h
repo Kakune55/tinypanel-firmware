@@ -125,6 +125,7 @@ public:
   void configureMessages(const char* channel, uint32_t pollIntervalMs, uint8_t limit);
   void configureWeather(uint32_t pollIntervalMs);
   void configureTodos(uint32_t pollIntervalMs, uint8_t limit = MaxTodos);
+  void setVerbose(bool verbose);
   bool isConfigured() const;
   bool isSyncing() const;
   bool hasFailed() const;
@@ -208,6 +209,7 @@ private:
   HubSyncState syncState_ = HubSyncState::Idle;
   bool requestResultPending_ = false;
   bool lastRequestOk_ = true;
+  bool verbose_ = false;
   String messageChannel_ = "desk";
   uint8_t messageLimit_ = MaxMessages;
   HubMessage messages_[MaxMessages];
