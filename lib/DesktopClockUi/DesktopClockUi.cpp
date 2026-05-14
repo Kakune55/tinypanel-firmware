@@ -104,6 +104,20 @@ String formatMessageTimestamp(const String& value) {
   return value;
 }
 
+String messagePreviewText(const String& body) {
+  String preview = body;
+  int start = preview.indexOf("[[BMP:");
+  while (start >= 0) {
+    const int end = preview.indexOf("]]", start + 6);
+    if (end < 0) {
+      break;
+    }
+    preview = preview.substring(0, start) + "[bitmap]" + preview.substring(end + 2);
+    start = preview.indexOf("[[BMP:", start + 8);
+  }
+  return preview;
+}
+
 void drawWrappedText(RlcdDisplay& display,
                      int x,
                      int y,
@@ -416,7 +430,7 @@ void drawMessagePage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
     snprintf(idText, sizeof(idText), "#%d", model.messages[i].id);
     display.drawText(listX + 4, y + 4, idText, !active, 1);
     drawClippedText(display, listX + 38, y + 4, messageTitle(model.messages[i]), 12, !active, 1);
-    Utf8Text::drawClipped(display, listX + 4, y + 13, listW - 8, model.messages[i].body, !active);
+    Utf8Text::drawClipped(display, listX + 4, y + 13, listW - 8, messagePreviewText(model.messages[i].body), !active);
   }
 
   const HubMessage& message = model.messages[selected];
@@ -425,6 +439,15 @@ void drawMessagePage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
 
   display.drawText(24, 270, model.messageBodyFocused ? "KEY PAGE" : "KEY SELECT", true, 1);
   display.drawText(250, 270, "DBL FOCUS", true, 1);
+  if (model.messageDeleteProgress > 0) {
+    display.fillRect(14, 246, 372, 22, false);
+    display.drawText(146, 246, "HOLD DELETE", true, 1);
+    display.drawRect(16, 258, 368, 10, true);
+    const int fill = UiDraw::clampInt((364 * model.messageDeleteProgress) / 100, 0, 364);
+    if (fill > 0) {
+      display.fillRect(18, 260, fill, 6, true);
+    }
+  }
   drawPageDots(display, model.page);
 }
 
@@ -481,6 +504,16 @@ void drawSystemMenuItem(RlcdDisplay& display, int x, int y, int w, const char* l
   display.drawText(x + 6, y + 7, label, !active, 2);
 }
 
+void drawSystemActionButton(RlcdDisplay& display, int x, int y, int w, const char* label, bool active) {
+  constexpr int h = 38;
+  if (active) {
+    display.fillRect(x, y, w, h, true);
+  } else {
+    display.drawRect(x, y, w, h, true);
+  }
+  display.drawText(x + 12, y + 12, label, !active, 2);
+}
+
 void drawResourceBar(RlcdDisplay& display,
                      int x,
                      int y,
@@ -515,11 +548,12 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   constexpr int detailY = 42;
   constexpr int rightX = 264;
   constexpr int detailW = 256;
-  const uint8_t selected = min(model.selectedSystemMenuItem, static_cast<uint8_t>(2));
+  const uint8_t selected = min(model.selectedSystemMenuItem, static_cast<uint8_t>(3));
 
   drawSystemMenuItem(display, menuX, menuY, menuW, "STATUS", selected == 0);
   drawSystemMenuItem(display, menuX, menuY + 40, menuW, "STORE", selected == 1);
-  drawSystemMenuItem(display, menuX, menuY + 80, menuW, "REFRESH", selected == 2);
+  drawSystemMenuItem(display, menuX, menuY + 80, menuW, "SYNC", selected == 2);
+  drawSystemMenuItem(display, menuX, menuY + 120, menuW, "ACTION", selected == 3 && !model.systemActionFocused);
 
   display.drawFastVLine(124, 40, 214, true);
 
@@ -556,6 +590,24 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     display.drawText(detailX, detailY + 180, text, true, 2);
     snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
     display.drawText(rightX, detailY + 180, text, true, 2);
+  } else if (selected == 3) {
+    display.drawText(detailX, detailY, "ACTION", true, 2);
+    display.drawText(detailX, detailY + 32, model.systemActionFocused ? "KEY MOVE  HOLD RUN" : "DBL FOCUS BUTTONS", true, 1);
+    drawSystemActionButton(display,
+                           detailX,
+                           detailY + 62,
+                           detailW,
+                           "CLEAR MSG",
+                           model.systemActionFocused && model.selectedSystemAction == 0);
+    drawSystemActionButton(display,
+                           detailX,
+                           detailY + 108,
+                           detailW,
+                           "BACK",
+                           model.systemActionFocused && model.selectedSystemAction == 1);
+    snprintf(text, sizeof(text), "MSG %u", static_cast<unsigned>(model.messageCount));
+    display.drawText(detailX, detailY + 166, text, true, 2);
+    display.drawText(detailX, detailY + 198, "LOCAL CACHE ONLY", true, 1);
   } else {
     display.drawText(detailX, detailY, "BATTERY", true, 2);
     snprintf(text, sizeof(text), "%.2f%%", model.battery.percentFloat);
@@ -609,8 +661,8 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     display.drawText(rightX, detailY + 202, text, true, 1);
   }
 
-  display.drawText(24, 270, "KEY MENU", true, 1);
-  display.drawText(132, 270, "DBL RUN", true, 1);
+  display.drawText(24, 270, model.systemActionFocused ? "KEY BUTTON" : "KEY MENU", true, 1);
+  display.drawText(132, 270, model.systemActionFocused ? "HOLD RUN" : "DBL RUN", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }

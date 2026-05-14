@@ -61,13 +61,17 @@ class AppStorage {
   static constexpr const char* LogsDir = "/tinypanel/logs";
   static constexpr const char* CalibDir = "/tinypanel/calib";
   static constexpr const char* StateDir = "/tinypanel/state";
+  static constexpr const char* MessagesDir = "/tinypanel/cache/messages";
   static constexpr const char* WifiPath = "/tinypanel/config/wifi.json";
   static constexpr const char* DevicePath = "/tinypanel/config/device.json";
-  static constexpr const char* MessagesPath = "/tinypanel/cache/messages.json";
+  static constexpr const char* MessagesIndexPath = "/tinypanel/cache/messages/index.bin";
   static constexpr const char* WeatherPath = "/tinypanel/cache/weather.json";
   static constexpr const char* TodosPath = "/tinypanel/cache/todos.json";
   static constexpr const char* BatteryCurvePath = "/tinypanel/calib/battery_curve.csv";
 
+  String messagePath(int id) const;
+  bool saveMessageRecord(const HubMessage& message) const;
+  bool loadMessageRecord(int id, HubMessage& message) const;
   String batteryLogPath(const RtcDateTime& now) const;
   String systemLogPath(const RtcDateTime& now) const;
   String timestampOrUptime(const RtcDateTime& now, uint32_t uptimeS) const;

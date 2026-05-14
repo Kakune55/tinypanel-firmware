@@ -156,6 +156,8 @@ public:
   const HubMessage* messages() const;
   const HubMessage* messageAt(size_t index) const;
   bool setMessages(const HubMessage* messages, size_t count);
+  bool deleteMessageLocal(size_t index);
+  void clearMessagesLocal();
   const HubWeather& weather() const;
   bool setWeather(const HubWeather& weather);
   size_t todoCount() const;

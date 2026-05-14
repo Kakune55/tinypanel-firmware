@@ -4,6 +4,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <esp_vfs_fat.h>
+#include <esp_heap_caps.h>
 #include <ff.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -175,11 +176,15 @@ bool SdCardStorage::writeText(const char* path, const String& text, bool append)
 }
 
 bool SdCardStorage::writeTextAtomic(const char* path, const String& text) {
+  return writeBinaryAtomic(path, reinterpret_cast<const uint8_t*>(text.c_str()), text.length());
+}
+
+bool SdCardStorage::writeBinaryAtomic(const char* path, const uint8_t* data, size_t len) {
   if (!isReady()) {
     setErrorText("not mounted");
     return false;
   }
-  if (!path || path[0] == '\0') {
+  if (!path || path[0] == '\0' || (!data && len > 0)) {
     setErrorText("bad path");
     return false;
   }
@@ -192,11 +197,11 @@ bool SdCardStorage::writeTextAtomic(const char* path, const String& text) {
     return false;
   }
 
-  const size_t written = fwrite(text.c_str(), 1, text.length(), file);
+  const size_t written = len > 0 ? fwrite(data, 1, len, file) : 0;
   const int flushResult = fflush(file);
   fsync(fileno(file));
   const int closeResult = fclose(file);
-  if (written != text.length() || flushResult != 0 || closeResult != 0) {
+  if (written != len || flushResult != 0 || closeResult != 0) {
     unlink(tempPath.c_str());
     setErrorText("write failed");
     return false;
@@ -241,6 +246,64 @@ bool SdCardStorage::readText(const char* path, String& out, size_t maxBytes) con
 
   fclose(file);
   return true;
+}
+
+bool SdCardStorage::readBinaryBuffer(const char* path,
+                                     uint8_t*& out,
+                                     size_t& outLen,
+                                     size_t maxBytes,
+                                     bool preferPsram) const {
+  out = nullptr;
+  outLen = 0;
+  if (!isReady() || maxBytes == 0) {
+    return false;
+  }
+
+  FILE* file = fopen(absolutePath(path).c_str(), "rb");
+  if (!file) {
+    return false;
+  }
+
+  if (fseek(file, 0, SEEK_END) != 0) {
+    fclose(file);
+    return false;
+  }
+  const long size = ftell(file);
+  if (size < 0 || static_cast<size_t>(size) > maxBytes) {
+    fclose(file);
+    return false;
+  }
+  rewind(file);
+
+  uint8_t* buffer = nullptr;
+  if (preferPsram) {
+    buffer = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(size) + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (!buffer) {
+    buffer = static_cast<uint8_t*>(heap_caps_malloc(static_cast<size_t>(size) + 1, MALLOC_CAP_8BIT));
+  }
+  if (!buffer) {
+    fclose(file);
+    return false;
+  }
+
+  const size_t got = size > 0 ? fread(buffer, 1, static_cast<size_t>(size), file) : 0;
+  fclose(file);
+  if (got != static_cast<size_t>(size)) {
+    heap_caps_free(buffer);
+    return false;
+  }
+
+  buffer[got] = 0;
+  out = buffer;
+  outLen = got;
+  return true;
+}
+
+void SdCardStorage::freeBuffer(uint8_t* buffer) const {
+  if (buffer) {
+    heap_caps_free(buffer);
+  }
 }
 
 bool SdCardStorage::remove(const char* path) {

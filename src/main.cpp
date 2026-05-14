@@ -128,6 +128,19 @@ void bootLogf(const char* format, ...) {
   bootLog(buffer);
 }
 
+void bootLogMemory(const char* label) {
+  Serial.printf("MEM %s: heap %lu/%lu KB, psram %lu/%lu KB\n",
+                label,
+                static_cast<unsigned long>((ESP.getHeapSize() - ESP.getFreeHeap()) / 1024UL),
+                static_cast<unsigned long>(ESP.getHeapSize() / 1024UL),
+                static_cast<unsigned long>((ESP.getPsramSize() - ESP.getFreePsram()) / 1024UL),
+                static_cast<unsigned long>(ESP.getPsramSize() / 1024UL));
+  bootLogf("mem %s H%luK P%luK",
+           label,
+           static_cast<unsigned long>((ESP.getHeapSize() - ESP.getFreeHeap()) / 1024UL),
+           static_cast<unsigned long>((ESP.getPsramSize() - ESP.getFreePsram()) / 1024UL));
+}
+
 }  // namespace
 
 void setup() {
@@ -139,6 +152,7 @@ void setup() {
   Serial.printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));
   Serial.printf("PSRAM found: %s\n", psramFound() ? "yes" : "no");
   Serial.printf("Flash size: %u bytes\n", ESP.getFlashChipSize());
+  bootLogMemory("start");
 
   keyButton.begin();
   bootButton.begin();
@@ -152,6 +166,7 @@ void setup() {
   bootLog("kernel: TinyPanel firmware");
   bootLogf("psram: %s", psramFound() ? "yes" : "no");
   bootLogf("flash: %lu KB", static_cast<unsigned long>(ESP.getFlashChipSize() / 1024UL));
+  bootLogMemory("display");
 
   bootLog("i2c: scanning bus");
   i2cScanner.begin(BoardConfig::I2cSda, BoardConfig::I2cScl);
@@ -159,6 +174,7 @@ void setup() {
 
   bootLog("power: init battery adc");
   battery.begin();
+  bootLogMemory("adc");
 
   bootLog("shtc3: probing sensor");
   const bool shtc3Ok = shtc3.begin();
@@ -169,11 +185,13 @@ void setup() {
   const bool rtcOk = rtc.begin();
   Serial.printf("RTC begin: %s\n", rtcOk ? "ok" : "failed");
   bootLogf("rtc: %s", rtcOk ? "ok" : "failed");
+  bootLogMemory("i2c");
 
   bootLog("sd: mount card");
   controller.setSdMounted(sdCard.begin());
   sdCard.printInfo(Serial);
   bootLogf("sd: %s", controller.sdMounted() ? "mounted" : sdCard.lastErrorText());
+  bootLogMemory("sd");
   bool batteryCurveFromSd = false;
   bool messagesRestoredFromSd = false;
   if (controller.sdMounted()) {
@@ -221,6 +239,7 @@ void setup() {
       bootLogf("todos: cached %u", static_cast<unsigned>(cachedTodoCount));
       storageLog("todos", "restored cache");
     }
+    bootLogMemory("storage");
   }
 
   const bool sdWifiOk = appStorage.loadWifiCredentials(sdWifiCredentials);
@@ -239,10 +258,12 @@ void setup() {
       Serial.println("WiFi: loaded credentials from SD");
       storageLog("wifi_config", "loaded from sd");
     }
+    bootLogMemory("wifi");
   } else {
     Serial.println("WiFi: create include/AppSecrets.h or /tinypanel/config/wifi.json to enable network");
     bootLog("wifi: not configured");
     storageLog("wifi", "not configured", "WARN");
+    bootLogMemory("wifi");
   }
 
   bootLog("hub: configure client");
@@ -254,14 +275,23 @@ void setup() {
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
   bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
   storageLog("hub", hub.isConfigured() ? "configured" : "disabled", hub.isConfigured() ? "INFO" : "WARN");
+  bootLogMemory("hub");
 
   bootLog("sensors: first read");
   controller.readSensors(true);
+  bootLogMemory("sensors");
   bootLog("ntp: sync timeout 12s");
   controller.trySyncTime(true);
   bootLogf("ntp: %s", controller.ntpSynced() ? "synced" : "failed");
   storageLog("ntp", controller.ntpSynced() ? "synced" : "failed", controller.ntpSynced() ? "INFO" : "WARN");
   controller.makeBootIdFromCurrentTime();
+  bootLogMemory("ntp");
+
+  bootLog("hub: initial sync");
+  controller.runInitialHubSyncNow();
+  storageLog("hub_sync", "initial sync complete");
+  bootLog("hub: initial sync done");
+  bootLogMemory("sync");
 
   bootLog("ui: start desktop");
   storageLog("ui", "start desktop");

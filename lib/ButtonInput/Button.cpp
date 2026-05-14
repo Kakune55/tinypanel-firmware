@@ -59,6 +59,10 @@ uint32_t Button::lastPressDurationMs() const {
   return lastPressDurationMs_;
 }
 
+uint32_t Button::currentPressDurationMs() const {
+  return isPressed() ? millis() - pressStartMs_ : 0;
+}
+
 bool Button::pressedLevel() const {
   return activeLow_ ? LOW : HIGH;
 }

@@ -26,7 +26,10 @@ class SdCardStorage {
   bool ensureDir(const char* path);
   bool writeText(const char* path, const String& text, bool append = false);
   bool writeTextAtomic(const char* path, const String& text);
+  bool writeBinaryAtomic(const char* path, const uint8_t* data, size_t len);
   bool readText(const char* path, String& out, size_t maxBytes = 4096) const;
+  bool readBinaryBuffer(const char* path, uint8_t*& out, size_t& outLen, size_t maxBytes, bool preferPsram = false) const;
+  void freeBuffer(uint8_t* buffer) const;
   bool remove(const char* path);
   bool appendLine(const char* path, const String& line);
   void printInfo(Stream& out) const;

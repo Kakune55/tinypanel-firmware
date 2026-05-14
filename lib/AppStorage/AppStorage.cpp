@@ -1,10 +1,20 @@
 #include "AppStorage.h"
 
 #include <ArduinoJson.h>
+#include <cstring>
+#include <esp_heap_caps.h>
 
 namespace {
 
 constexpr uint8_t kSchemaVersion = 1;
+constexpr size_t kMaxWeatherCacheBytes = 24 * 1024;
+constexpr size_t kMaxTodoCacheBytes = 16 * 1024;
+constexpr uint8_t kMessageCacheVersion = 1;
+constexpr uint8_t kMessageIndexHeaderSize = 7;
+constexpr uint8_t kMessageRecordHeaderSize = 19;
+constexpr size_t kMaxMessageRecordBytes = 64 * 1024;
+constexpr char kMessageIndexMagic[] = {'T', 'P', 'M', 'I'};
+constexpr char kMessageRecordMagic[] = {'T', 'P', 'M', 'G'};
 
 void copyField(char* dest, size_t destSize, const char* value) {
   if (!dest || destSize == 0) {
@@ -13,13 +23,54 @@ void copyField(char* dest, size_t destSize, const char* value) {
   snprintf(dest, destSize, "%s", value ? value : "");
 }
 
+void writeU16(uint8_t* data, size_t& offset, uint16_t value) {
+  data[offset++] = static_cast<uint8_t>(value & 0xFF);
+  data[offset++] = static_cast<uint8_t>(value >> 8);
+}
+
+void writeU32(uint8_t* data, size_t& offset, uint32_t value) {
+  data[offset++] = static_cast<uint8_t>(value & 0xFF);
+  data[offset++] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  data[offset++] = static_cast<uint8_t>((value >> 16) & 0xFF);
+  data[offset++] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
+
+bool readU16(const uint8_t* data, size_t len, size_t& offset, uint16_t& out) {
+  if (offset + 2 > len) {
+    return false;
+  }
+  out = static_cast<uint16_t>(data[offset]) | (static_cast<uint16_t>(data[offset + 1]) << 8);
+  offset += 2;
+  return true;
+}
+
+bool readU32(const uint8_t* data, size_t len, size_t& offset, uint32_t& out) {
+  if (offset + 4 > len) {
+    return false;
+  }
+  out = static_cast<uint32_t>(data[offset]) |
+        (static_cast<uint32_t>(data[offset + 1]) << 8) |
+        (static_cast<uint32_t>(data[offset + 2]) << 16) |
+        (static_cast<uint32_t>(data[offset + 3]) << 24);
+  offset += 4;
+  return true;
+}
+
+uint8_t* allocMessageBuffer(size_t len) {
+  uint8_t* buffer = static_cast<uint8_t*>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!buffer) {
+    buffer = static_cast<uint8_t*>(heap_caps_malloc(len, MALLOC_CAP_8BIT));
+  }
+  return buffer;
+}
+
 }  // namespace
 
 bool AppStorage::begin(SdCardStorage& sd) {
   sd_ = &sd;
   ready_ = sd_->isMounted() && sd_->ensureDir(RootDir) && sd_->ensureDir(ConfigDir) &&
            sd_->ensureDir(CacheDir) && sd_->ensureDir(LogsDir) && sd_->ensureDir(CalibDir) &&
-           sd_->ensureDir(StateDir);
+           sd_->ensureDir(StateDir) && sd_->ensureDir(MessagesDir);
   return ready_;
 }
 
@@ -122,22 +173,30 @@ bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
     return false;
   }
 
-  JsonDocument doc;
-  doc["version"] = kSchemaVersion;
-  JsonArray items = doc["messages"].to<JsonArray>();
   const size_t limit = count < HubService::MaxMessages ? count : HubService::MaxMessages;
-  for (size_t i = 0; i < limit; ++i) {
-    JsonObject item = items.add<JsonObject>();
-    item["id"] = messages[i].id;
-    item["channel"] = messages[i].channel;
-    item["author"] = messages[i].author;
-    item["body"] = messages[i].body;
-    item["created_at"] = messages[i].createdAt;
+  const size_t indexLen = kMessageIndexHeaderSize + limit * 4;
+  uint8_t* index = allocMessageBuffer(indexLen);
+  if (!index) {
+    return false;
   }
 
-  String text;
-  serializeJson(doc, text);
-  return sd_->writeTextAtomic(MessagesPath, text);
+  size_t offset = 0;
+  std::memcpy(index + offset, kMessageIndexMagic, sizeof(kMessageIndexMagic));
+  offset += sizeof(kMessageIndexMagic);
+  index[offset++] = kMessageCacheVersion;
+  writeU16(index, offset, static_cast<uint16_t>(limit));
+
+  for (size_t i = 0; i < limit; ++i) {
+    if (!saveMessageRecord(messages[i])) {
+      heap_caps_free(index);
+      return false;
+    }
+    writeU32(index, offset, static_cast<uint32_t>(messages[i].id));
+  }
+
+  const bool ok = sd_->writeBinaryAtomic(MessagesIndexPath, index, indexLen);
+  heap_caps_free(index);
+  return ok;
 }
 
 bool AppStorage::loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const {
@@ -146,38 +205,116 @@ bool AppStorage::loadMessages(HubMessage* out, size_t maxCount, size_t& outCount
     return false;
   }
 
-  String text;
-  if (!sd_->readText(MessagesPath, text, 8192)) {
+  uint8_t* index = nullptr;
+  size_t indexLen = 0;
+  if (!sd_->readBinaryBuffer(MessagesIndexPath, index, indexLen, kMessageIndexHeaderSize + HubService::MaxMessages * 4, true)) {
     return false;
   }
 
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, text);
-  if (error) {
-    return false;
-  }
-
-  JsonArray messages = doc["messages"].as<JsonArray>();
-  if (messages.isNull()) {
-    return false;
-  }
-
-  for (JsonObject item : messages) {
-    if (outCount >= maxCount) {
-      break;
-    }
-    HubMessage& message = out[outCount];
-    message.id = item["id"] | 0;
-    message.channel = item["channel"] | "";
-    message.author = item["author"] | "";
-    message.body = item["body"] | "";
-    message.createdAt = item["created_at"] | "";
-    if (message.id > 0 && message.body.length() > 0) {
-      ++outCount;
+  bool ok = false;
+  size_t offset = 0;
+  if (indexLen >= kMessageIndexHeaderSize &&
+      std::memcmp(index, kMessageIndexMagic, sizeof(kMessageIndexMagic)) == 0 &&
+      index[4] == kMessageCacheVersion) {
+    offset = 5;
+    uint16_t count = 0;
+    ok = readU16(index, indexLen, offset, count);
+    for (uint16_t i = 0; ok && i < count && outCount < maxCount; ++i) {
+      uint32_t id = 0;
+      ok = readU32(index, indexLen, offset, id);
+      if (!ok) {
+        break;
+      }
+      HubMessage message;
+      if (loadMessageRecord(static_cast<int>(id), message)) {
+        out[outCount++] = message;
+      }
     }
   }
+  sd_->freeBuffer(index);
 
-  return outCount > 0;
+  if (outCount > 0) {
+    return true;
+  }
+  return false;
+}
+
+bool AppStorage::saveMessageRecord(const HubMessage& message) const {
+  if (message.id <= 0) {
+    return false;
+  }
+
+  const uint16_t createdLen = static_cast<uint16_t>(min(message.createdAt.length(), static_cast<unsigned int>(UINT16_MAX)));
+  const uint16_t authorLen = static_cast<uint16_t>(min(message.author.length(), static_cast<unsigned int>(UINT16_MAX)));
+  const uint16_t channelLen = static_cast<uint16_t>(min(message.channel.length(), static_cast<unsigned int>(UINT16_MAX)));
+  const uint32_t bodyLen = static_cast<uint32_t>(message.body.length());
+  const size_t len = kMessageRecordHeaderSize + createdLen + authorLen + channelLen + bodyLen;
+  uint8_t* data = allocMessageBuffer(len);
+  if (!data) {
+    return false;
+  }
+
+  size_t offset = 0;
+  std::memcpy(data + offset, kMessageRecordMagic, sizeof(kMessageRecordMagic));
+  offset += sizeof(kMessageRecordMagic);
+  data[offset++] = kMessageCacheVersion;
+  writeU32(data, offset, static_cast<uint32_t>(message.id));
+  writeU16(data, offset, createdLen);
+  writeU16(data, offset, authorLen);
+  writeU16(data, offset, channelLen);
+  writeU32(data, offset, bodyLen);
+  std::memcpy(data + offset, message.createdAt.c_str(), createdLen);
+  offset += createdLen;
+  std::memcpy(data + offset, message.author.c_str(), authorLen);
+  offset += authorLen;
+  std::memcpy(data + offset, message.channel.c_str(), channelLen);
+  offset += channelLen;
+  std::memcpy(data + offset, message.body.c_str(), bodyLen);
+
+  const bool ok = sd_->writeBinaryAtomic(messagePath(message.id).c_str(), data, len);
+  heap_caps_free(data);
+  return ok;
+}
+
+bool AppStorage::loadMessageRecord(int id, HubMessage& message) const {
+  uint8_t* data = nullptr;
+  size_t len = 0;
+  if (!sd_->readBinaryBuffer(messagePath(id).c_str(), data, len, kMaxMessageRecordBytes, true)) {
+    return false;
+  }
+
+  size_t offset = 0;
+  bool ok = len >= kMessageRecordHeaderSize &&
+            std::memcmp(data, kMessageRecordMagic, sizeof(kMessageRecordMagic)) == 0 &&
+            data[4] == kMessageCacheVersion;
+  offset = 5;
+  uint32_t storedId = 0;
+  uint16_t createdLen = 0;
+  uint16_t authorLen = 0;
+  uint16_t channelLen = 0;
+  uint32_t bodyLen = 0;
+  ok = ok && readU32(data, len, offset, storedId);
+  ok = ok && readU16(data, len, offset, createdLen);
+  ok = ok && readU16(data, len, offset, authorLen);
+  ok = ok && readU16(data, len, offset, channelLen);
+  ok = ok && readU32(data, len, offset, bodyLen);
+  ok = ok && offset + createdLen + authorLen + channelLen + bodyLen <= len;
+
+  if (ok) {
+    message = {};
+    message.id = static_cast<int>(storedId);
+    message.createdAt = String(reinterpret_cast<const char*>(data + offset), createdLen);
+    offset += createdLen;
+    message.author = String(reinterpret_cast<const char*>(data + offset), authorLen);
+    offset += authorLen;
+    message.channel = String(reinterpret_cast<const char*>(data + offset), channelLen);
+    offset += channelLen;
+    message.body = String(reinterpret_cast<const char*>(data + offset), bodyLen);
+    ok = message.id > 0 && message.body.length() > 0;
+  }
+
+  sd_->freeBuffer(data);
+  return ok;
 }
 
 bool AppStorage::saveWeather(const HubWeather& weather) {
@@ -247,7 +384,7 @@ bool AppStorage::loadWeather(HubWeather& out) const {
   }
 
   String text;
-  if (!sd_->readText(WeatherPath, text, 12000)) {
+  if (!sd_->readText(WeatherPath, text, kMaxWeatherCacheBytes)) {
     return false;
   }
 
@@ -343,7 +480,7 @@ bool AppStorage::loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) cons
   }
 
   String text;
-  if (!sd_->readText(TodosPath, text, 8192)) {
+  if (!sd_->readText(TodosPath, text, kMaxTodoCacheBytes)) {
     return false;
   }
 
@@ -460,6 +597,12 @@ String AppStorage::batteryLogPath(const RtcDateTime& now) const {
   } else {
     snprintf(buffer, sizeof(buffer), "/tinypanel/logs/battery_uptime.csv");
   }
+  return String(buffer);
+}
+
+String AppStorage::messagePath(int id) const {
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "%s/msg_%d.bin", MessagesDir, id);
   return String(buffer);
 }
 

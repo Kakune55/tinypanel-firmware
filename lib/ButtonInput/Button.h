@@ -13,6 +13,7 @@ public:
   bool consumePressed();
   bool consumeReleased();
   uint32_t lastPressDurationMs() const;
+  uint32_t currentPressDurationMs() const;
 
 private:
   bool pressedLevel() const;

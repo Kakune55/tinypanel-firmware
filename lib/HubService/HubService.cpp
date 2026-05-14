@@ -261,6 +261,25 @@ bool HubService::setMessages(const HubMessage* messages, size_t count) {
   return true;
 }
 
+bool HubService::deleteMessageLocal(size_t index) {
+  if (index >= messageCount_) {
+    return false;
+  }
+  for (size_t i = index + 1; i < messageCount_; ++i) {
+    messages_[i - 1] = messages_[i];
+  }
+  --messageCount_;
+  messages_[messageCount_] = {};
+  return true;
+}
+
+void HubService::clearMessagesLocal() {
+  for (size_t i = 0; i < messageCount_; ++i) {
+    messages_[i] = {};
+  }
+  messageCount_ = 0;
+}
+
 const HubWeather& HubService::weather() const {
   return weather_;
 }

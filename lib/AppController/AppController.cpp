@@ -10,6 +10,14 @@ namespace {
 AppController* activeController = nullptr;
 constexpr uint32_t kLightSleepMinMs = 20;
 constexpr uint32_t kLightSleepMaxMs = 120;
+constexpr uint8_t kSystemMenuStorage = 1;
+constexpr uint8_t kSystemMenuRefresh = 2;
+constexpr uint8_t kSystemMenuAction = 3;
+constexpr uint8_t kSystemMenuItemCount = 4;
+constexpr uint8_t kSystemActionClearMessages = 0;
+constexpr uint8_t kSystemActionBack = 1;
+constexpr uint8_t kSystemActionCount = 2;
+constexpr uint32_t kMessageDeleteProgressShowMs = 400;
 
 }  // namespace
 
@@ -172,7 +180,7 @@ void AppController::pollHubMessages(bool force) {
     state_.messageBodyScrollLine = 0;
     storage_.saveMessages(hub_.messages(), hub_.messageCount());
     if (state_.page != DesktopClockPage::Message) {
-      state_.newMessageAlert = true;
+      state_.pendingNewMessageAlert = true;
     }
   }
   markUiDirty();
@@ -199,12 +207,27 @@ void AppController::pollTodos(bool force) {
   }
 }
 
+void AppController::runInitialHubSyncNow() {
+  if (state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
+    return;
+  }
+
+  syncHubTelemetry(true);
+  pollWeather(true);
+  pollHubMessages(true);
+  pollTodos(true);
+  state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
+  publishPendingNewMessageAlert();
+  markUiDirty();
+}
+
 void AppController::loopOnce() {
   if (state_.lastActivityMs == 0) {
     state_.lastActivityMs = millis();
   }
   updateCpuFrequency();
   handleButtons();
+  handleMessageDeleteHold();
   handlePendingKeyClick();
   handleWifi();
   readRtc(false);
@@ -216,6 +239,11 @@ void AppController::loopOnce() {
 
   if (hub_.update()) {
     markUiDirty();
+  }
+
+  if (state_.scheduledTaskStep == State::ScheduledTaskStep::Idle &&
+      state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
+    publishPendingNewMessageAlert();
   }
 
   if (state_.newMessageAlert) {
@@ -298,6 +326,8 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.messagesRestoredFromSd = state_.messagesRestoredFromSd;
   model.batteryLogIntervalMs = config_.batteryLogIntervalMs;
   model.selectedSystemMenuItem = state_.selectedSystemMenuItem;
+  model.selectedSystemAction = state_.selectedSystemAction;
+  model.systemActionFocused = state_.systemActionFocused;
   model.wifiConnected = wifi_.isConnected();
   model.wifiRssi = wifi_.rssi();
   model.wifiIp = wifi_.isConnected() ? wifi_.ipAddress() : "";
@@ -318,6 +348,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.selectedMessage = state_.selectedMessage;
   model.messageBodyFocused = state_.messageBodyFocused;
   model.messageBodyScrollLine = state_.messageBodyScrollLine;
+  model.messageDeleteProgress = state_.messageDeleteProgress;
   model.todos = hub_.todos();
   model.todoCount = hub_.todoCount();
   model.selectedTodo = state_.selectedTodo;
@@ -326,7 +357,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
 
 void AppController::renderHubState() {
   markUiDirty();
-  if (display_.isReady()) {
+  if (display_.isReady() && !bootScreenActive_) {
     renderUi();
   }
 }
@@ -393,6 +424,7 @@ bool AppController::runNextInitialHubSyncStep() {
     case State::InitialHubSyncStep::Todos:
       pollTodos(true);
       state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
+      publishPendingNewMessageAlert();
       return true;
     case State::InitialHubSyncStep::Done:
       break;
@@ -444,6 +476,7 @@ bool AppController::runNextScheduledTask() {
         state_.scheduledTaskForce = false;
         state_.scheduledTaskIncludeTelemetry = false;
         state_.scheduledTaskTodoSyncOk = true;
+        publishPendingNewMessageAlert();
       }
       return true;
     case State::ScheduledTaskStep::Telemetry:
@@ -452,6 +485,7 @@ bool AppController::runNextScheduledTask() {
       state_.scheduledTaskForce = false;
       state_.scheduledTaskIncludeTelemetry = false;
       state_.scheduledTaskTodoSyncOk = true;
+      publishPendingNewMessageAlert();
       return true;
   }
   return false;
@@ -463,6 +497,24 @@ void AppController::queueScheduledTasks(bool force, bool includeTelemetry) {
   state_.scheduledTaskIncludeTelemetry = includeTelemetry;
   state_.scheduledTaskTodoSyncOk = true;
   state_.scheduledTaskStep = State::ScheduledTaskStep::WifiSignal;
+  markUiDirty();
+}
+
+void AppController::publishPendingNewMessageAlert() {
+  if (!state_.pendingNewMessageAlert) {
+    return;
+  }
+  if (state_.page == DesktopClockPage::Message) {
+    state_.pendingNewMessageAlert = false;
+    return;
+  }
+  if (bootScreenActive_) {
+    return;
+  }
+
+  state_.pendingNewMessageAlert = false;
+  state_.newMessageAlert = true;
+  state_.lastAlertBlinkMs = millis();
   markUiDirty();
 }
 
@@ -671,6 +723,53 @@ void AppController::handleMessageKeyClick() {
   markUiDirty();
 }
 
+void AppController::handleMessageDelete() {
+  const size_t count = hub_.messageCount();
+  if (count == 0 || state_.messageBodyFocused) {
+    return;
+  }
+
+  const size_t index = min(state_.selectedMessage, count - 1);
+  if (!hub_.deleteMessageLocal(index)) {
+    return;
+  }
+
+  storage_.saveMessages(hub_.messages(), hub_.messageCount());
+  const size_t nextCount = hub_.messageCount();
+  if (nextCount == 0) {
+    state_.selectedMessage = 0;
+    state_.messageBodyScrollLine = 0;
+  } else if (state_.selectedMessage >= nextCount) {
+    state_.selectedMessage = nextCount - 1;
+  }
+  state_.messageDeleteProgress = 0;
+  state_.messageDeleteTriggered = true;
+  markUiDirty();
+}
+
+void AppController::handleMessageDeleteHold() {
+  if (state_.page != DesktopClockPage::Message || state_.messageBodyFocused || hub_.messageCount() == 0 ||
+      !keyButton_.isPressed() || state_.messageDeleteTriggered) {
+    if (state_.messageDeleteProgress != 0) {
+      state_.messageDeleteProgress = 0;
+      markUiDirty();
+    }
+    return;
+  }
+
+  const uint32_t heldMs = keyButton_.currentPressDurationMs();
+  const uint8_t progress = heldMs < kMessageDeleteProgressShowMs
+                               ? 0
+                               : static_cast<uint8_t>(min<uint32_t>(100, heldMs * 100UL / config_.keyLongPressMs));
+  if (progress != state_.messageDeleteProgress) {
+    state_.messageDeleteProgress = progress;
+    markUiDirty();
+  }
+  if (heldMs >= config_.keyLongPressMs) {
+    handleMessageDelete();
+  }
+}
+
 void AppController::handleTodoKeyClick() {
   const size_t count = hub_.todoCount();
   if (count == 0) {
@@ -711,9 +810,15 @@ void AppController::handleTodoDelete() {
 }
 
 void AppController::handleSystemKeyClick() {
-  constexpr uint8_t kSystemMenuItemCount = 3;
-  constexpr uint8_t kSystemMenuStorage = 1;
+  if (state_.selectedSystemMenuItem == kSystemMenuAction && state_.systemActionFocused) {
+    state_.selectedSystemAction = (state_.selectedSystemAction + 1) % kSystemActionCount;
+    markUiDirty();
+    Serial.println("KEY: system action button");
+    return;
+  }
+
   state_.selectedSystemMenuItem = (state_.selectedSystemMenuItem + 1) % kSystemMenuItemCount;
+  state_.systemActionFocused = false;
   if (state_.selectedSystemMenuItem == kSystemMenuStorage) {
     refreshSdStats(true);
   }
@@ -722,20 +827,49 @@ void AppController::handleSystemKeyClick() {
 }
 
 void AppController::handleSystemAction() {
-  constexpr uint8_t kSystemMenuRefresh = 2;
-  if (state_.selectedSystemMenuItem != kSystemMenuRefresh) {
+  if (state_.selectedSystemMenuItem == kSystemMenuRefresh) {
+    Serial.println("KEY: system refresh");
+    handleForcedRefresh();
+    markUiDirty();
+    return;
+  }
+  if (state_.selectedSystemMenuItem == kSystemMenuAction) {
+    if (!state_.systemActionFocused) {
+      state_.systemActionFocused = true;
+      state_.selectedSystemAction = 0;
+      markUiDirty();
+      Serial.println("KEY: system action focus");
+      return;
+    }
+    state_.systemActionFocused = false;
+    markUiDirty();
+    Serial.println("KEY: system action menu");
+    return;
+  }
+
+  Serial.println("KEY: system action ignored");
+}
+
+void AppController::handleSystemClearMessages() {
+  if (hub_.messageCount() == 0) {
     Serial.println("KEY: system action ignored");
     return;
   }
 
-  Serial.println("KEY: system refresh");
-  handleForcedRefresh();
+  hub_.clearMessagesLocal();
+  storage_.saveMessages(hub_.messages(), hub_.messageCount());
+  state_.selectedMessage = 0;
+  state_.messageBodyScrollLine = 0;
+  state_.newMessageAlert = false;
+  state_.pendingNewMessageAlert = false;
   markUiDirty();
+  Serial.println("KEY: clear messages");
 }
 
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
+    state_.pendingNewMessageAlert = false;
     state_.page = DesktopClockPage::Message;
     state_.messageBodyFocused = false;
     state_.selectedMessage = 0;
@@ -806,10 +940,34 @@ void AppController::handleButtons() {
     const bool longPress = keyButton_.lastPressDurationMs() >= config_.keyLongPressMs;
     if (longPress) {
       state_.pendingKeyClick = false;
+      if (state_.messageDeleteTriggered) {
+        state_.messageDeleteTriggered = false;
+        state_.messageDeleteProgress = 0;
+        return;
+      }
+      if (state_.page == DesktopClockPage::Message) {
+        Serial.println("KEY: delete message");
+        handleMessageDelete();
+        return;
+      }
       if (state_.page == DesktopClockPage::Todo) {
         Serial.println("KEY: delete todo");
         handleTodoDelete();
         return;
+      }
+      if (state_.page == DesktopClockPage::System && state_.selectedSystemMenuItem == kSystemMenuAction &&
+          state_.systemActionFocused) {
+        if (state_.selectedSystemAction == kSystemActionClearMessages) {
+          Serial.println("KEY: clear messages");
+          handleSystemClearMessages();
+          return;
+        }
+        if (state_.selectedSystemAction == kSystemActionBack) {
+          state_.systemActionFocused = false;
+          markUiDirty();
+          Serial.println("KEY: system action back");
+          return;
+        }
       }
       if (state_.page != DesktopClockPage::System) {
         Serial.println("KEY: long ignored on this page");
@@ -823,6 +981,8 @@ void AppController::handleButtons() {
       state_.pendingKeyClick = false;
       handleKeyDoubleClick();
     } else {
+      state_.messageDeleteTriggered = false;
+      state_.messageDeleteProgress = 0;
       state_.pendingKeyClick = true;
       state_.pendingKeyClickMs = now;
     }
@@ -831,6 +991,7 @@ void AppController::handleButtons() {
   if (bootButton_.consumeReleased()) {
     noteActivity();
     state_.page = DesktopClockUi::nextPage(state_.page);
+    state_.systemActionFocused = false;
     if (state_.page == DesktopClockPage::System && state_.selectedSystemMenuItem == 1) {
       refreshSdStats(true);
     }

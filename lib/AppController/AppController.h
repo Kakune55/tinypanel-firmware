@@ -69,6 +69,7 @@ class AppController {
   void pollHubMessages(bool force = false);
   void pollWeather(bool force = false);
   void pollTodos(bool force = false);
+  void runInitialHubSyncNow();
   void loopOnce();
 
  private:
@@ -111,6 +112,8 @@ class AppController {
     bool messagesRestoredFromSd = false;
     bool uiDirty = true;
     uint8_t selectedSystemMenuItem = 0;
+    uint8_t selectedSystemAction = 0;
+    bool systemActionFocused = false;
     uint32_t lastRtcMs = 0;
     uint32_t lastBatteryLogMs = 0;
     uint32_t lastSdStatsMs = 0;
@@ -126,6 +129,9 @@ class AppController {
     uint16_t messageBodyScrollLine = 0;
     bool messageBodyFocused = false;
     bool newMessageAlert = false;
+    bool pendingNewMessageAlert = false;
+    bool messageDeleteTriggered = false;
+    uint8_t messageDeleteProgress = 0;
     String bootId;
     size_t selectedTodo = 0;
     uint8_t hubSyncWindowCount = 0;
@@ -158,6 +164,7 @@ class AppController {
   bool runNextInitialHubSyncStep();
   bool runNextScheduledTask();
   void queueScheduledTasks(bool force, bool includeTelemetry);
+  void publishPendingNewMessageAlert();
   void refreshSdStats(bool force = false);
   void handleForcedRefresh();
   void updateSelectedTodoAfterChange();
@@ -165,11 +172,14 @@ class AppController {
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;
   void handleMessageKeyClick();
+  void handleMessageDelete();
+  void handleMessageDeleteHold();
   void handleTodoKeyClick();
   void handleTodoStatusToggle();
   void handleTodoDelete();
   void handleSystemKeyClick();
   void handleSystemAction();
+  void handleSystemClearMessages();
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();

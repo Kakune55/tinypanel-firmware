@@ -38,6 +38,8 @@ struct DesktopClockUiModel {
   bool messagesRestoredFromSd = false;
   uint32_t batteryLogIntervalMs = 0;
   uint8_t selectedSystemMenuItem = 0;
+  uint8_t selectedSystemAction = 0;
+  bool systemActionFocused = false;
   bool wifiConnected = false;
   int wifiRssi = 0;
   String wifiIp;
@@ -57,6 +59,7 @@ struct DesktopClockUiModel {
   size_t selectedMessage = 0;
   bool messageBodyFocused = false;
   uint16_t messageBodyScrollLine = 0;
+  uint8_t messageDeleteProgress = 0;
   const HubTodo* todos = nullptr;
   size_t todoCount = 0;
   size_t selectedTodo = 0;
