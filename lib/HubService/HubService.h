@@ -157,9 +157,11 @@ public:
   const HubMessage* messageAt(size_t index) const;
   bool setMessages(const HubMessage* messages, size_t count);
   const HubWeather& weather() const;
+  bool setWeather(const HubWeather& weather);
   size_t todoCount() const;
   const HubTodo* todos() const;
   const HubTodo* todoAt(size_t index) const;
+  bool setTodos(const HubTodo* todos, size_t count);
 
 private:
   HubRequestResult sendTelemetry(const HubTelemetrySnapshot& snapshot);

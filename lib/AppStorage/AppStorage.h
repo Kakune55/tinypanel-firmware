@@ -27,6 +27,10 @@ class AppStorage {
   bool loadWifiCredentials(StoredWifiCredentials& out) const;
   bool saveMessages(const HubMessage* messages, size_t count);
   bool loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const;
+  bool saveWeather(const HubWeather& weather);
+  bool loadWeather(HubWeather& out) const;
+  bool saveTodos(const HubTodo* todos, size_t count);
+  bool loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) const;
   bool loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_t& outCount) const;
   bool appendBatterySample(const BatteryStatus& battery, const RtcDateTime& now, uint32_t uptimeS);
   bool appendSystemLog(const RtcDateTime& now, uint32_t uptimeS, const char* level, const char* event, const char* detail);
@@ -40,6 +44,8 @@ class AppStorage {
   static constexpr const char* StateDir = "/tinypanel/state";
   static constexpr const char* WifiPath = "/tinypanel/config/wifi.json";
   static constexpr const char* MessagesPath = "/tinypanel/cache/messages.json";
+  static constexpr const char* WeatherPath = "/tinypanel/cache/weather.json";
+  static constexpr const char* TodosPath = "/tinypanel/cache/todos.json";
   static constexpr const char* BatteryCurvePath = "/tinypanel/calib/battery_curve.csv";
 
   String batteryLogPath(const RtcDateTime& now) const;

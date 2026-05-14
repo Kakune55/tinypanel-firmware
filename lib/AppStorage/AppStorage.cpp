@@ -131,6 +131,204 @@ bool AppStorage::loadMessages(HubMessage* out, size_t maxCount, size_t& outCount
   return outCount > 0;
 }
 
+bool AppStorage::saveWeather(const HubWeather& weather) {
+  if (!isReady() || !weather.valid) {
+    return false;
+  }
+
+  JsonDocument doc;
+  doc["version"] = kSchemaVersion;
+  doc["valid"] = weather.valid;
+  doc["location"] = weather.location;
+  doc["condition"] = weather.condition;
+  doc["icon"] = weather.icon;
+  doc["temperature"] = weather.temperature;
+  doc["humidity"] = weather.humidity;
+  doc["updated_at"] = weather.updatedAt;
+
+  JsonArray hourly = doc["hourly"].to<JsonArray>();
+  for (size_t i = 0; i < weather.hourlyCount && i < HubWeather::MaxHourly; ++i) {
+    const HubWeatherHourly& source = weather.hourly[i];
+    JsonObject item = hourly.add<JsonObject>();
+    item["time"] = source.time;
+    item["condition"] = source.condition;
+    item["icon"] = source.icon;
+    item["temperature"] = source.temperature;
+    item["humidity"] = source.humidity;
+    item["precipitation"] = source.precipitation;
+    item["precip_probability"] = source.precipProbability;
+    item["wind_direction"] = source.windDirection;
+    item["wind_scale"] = source.windScale;
+    item["wind_speed"] = source.windSpeed;
+  }
+
+  JsonArray daily = doc["daily"].to<JsonArray>();
+  for (size_t i = 0; i < weather.dailyCount && i < HubWeather::MaxDaily; ++i) {
+    const HubWeatherDaily& source = weather.daily[i];
+    JsonObject item = daily.add<JsonObject>();
+    item["date"] = source.date;
+    item["sunrise"] = source.sunrise;
+    item["sunset"] = source.sunset;
+    item["condition_day"] = source.conditionDay;
+    item["condition_night"] = source.conditionNight;
+    item["icon_day"] = source.iconDay;
+    item["icon_night"] = source.iconNight;
+    item["temperature_min"] = source.temperatureMin;
+    item["temperature_max"] = source.temperatureMax;
+    item["humidity"] = source.humidity;
+    item["precipitation"] = source.precipitation;
+    item["precip_probability"] = source.precipProbability;
+    item["wind_direction_day"] = source.windDirectionDay;
+    item["wind_scale_day"] = source.windScaleDay;
+    item["wind_speed_day"] = source.windSpeedDay;
+    item["wind_direction_night"] = source.windDirectionNight;
+    item["wind_scale_night"] = source.windScaleNight;
+    item["wind_speed_night"] = source.windSpeedNight;
+  }
+
+  String text;
+  serializeJson(doc, text);
+  return sd_->writeTextAtomic(WeatherPath, text);
+}
+
+bool AppStorage::loadWeather(HubWeather& out) const {
+  out = {};
+  if (!isReady()) {
+    return false;
+  }
+
+  String text;
+  if (!sd_->readText(WeatherPath, text, 12000)) {
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, text);
+  if (error) {
+    return false;
+  }
+
+  out.location = doc["location"] | "";
+  out.condition = doc["condition"] | "";
+  out.icon = doc["icon"] | "";
+  out.temperature = doc["temperature"] | 0;
+  out.humidity = doc["humidity"] | 0;
+  out.updatedAt = doc["updated_at"] | "";
+
+  JsonArray hourly = doc["hourly"].as<JsonArray>();
+  for (JsonObject item : hourly) {
+    if (out.hourlyCount >= HubWeather::MaxHourly) {
+      break;
+    }
+    HubWeatherHourly& target = out.hourly[out.hourlyCount++];
+    target.time = item["time"] | "";
+    target.condition = item["condition"] | "";
+    target.icon = item["icon"] | "";
+    target.temperature = item["temperature"] | 0;
+    target.humidity = item["humidity"] | 0;
+    target.precipitation = item["precipitation"] | 0.0f;
+    target.precipProbability = item["precip_probability"] | -1;
+    target.windDirection = item["wind_direction"] | "";
+    target.windScale = item["wind_scale"] | "";
+    target.windSpeed = item["wind_speed"] | 0;
+  }
+
+  JsonArray daily = doc["daily"].as<JsonArray>();
+  for (JsonObject item : daily) {
+    if (out.dailyCount >= HubWeather::MaxDaily) {
+      break;
+    }
+    HubWeatherDaily& target = out.daily[out.dailyCount++];
+    target.date = item["date"] | "";
+    target.sunrise = item["sunrise"] | "";
+    target.sunset = item["sunset"] | "";
+    target.conditionDay = item["condition_day"] | "";
+    target.conditionNight = item["condition_night"] | "";
+    target.iconDay = item["icon_day"] | "";
+    target.iconNight = item["icon_night"] | "";
+    target.temperatureMin = item["temperature_min"] | 0;
+    target.temperatureMax = item["temperature_max"] | 0;
+    target.humidity = item["humidity"] | 0;
+    target.precipitation = item["precipitation"] | 0.0f;
+    target.precipProbability = item["precip_probability"] | -1;
+    target.windDirectionDay = item["wind_direction_day"] | "";
+    target.windScaleDay = item["wind_scale_day"] | "";
+    target.windSpeedDay = item["wind_speed_day"] | 0;
+    target.windDirectionNight = item["wind_direction_night"] | "";
+    target.windScaleNight = item["wind_scale_night"] | "";
+    target.windSpeedNight = item["wind_speed_night"] | 0;
+  }
+
+  out.valid = doc["valid"] | (out.condition.length() > 0 || out.hourlyCount > 0 || out.dailyCount > 0);
+  return out.valid;
+}
+
+bool AppStorage::saveTodos(const HubTodo* todos, size_t count) {
+  if (!isReady() || (!todos && count > 0)) {
+    return false;
+  }
+
+  JsonDocument doc;
+  doc["version"] = kSchemaVersion;
+  JsonArray items = doc["todos"].to<JsonArray>();
+  const size_t limit = count < HubService::MaxTodos ? count : HubService::MaxTodos;
+  for (size_t i = 0; i < limit; ++i) {
+    JsonObject item = items.add<JsonObject>();
+    item["id"] = todos[i].id;
+    item["text"] = todos[i].text;
+    item["status"] = todos[i].status;
+    item["version"] = todos[i].version;
+    item["created_at"] = todos[i].createdAt;
+    item["updated_at"] = todos[i].updatedAt;
+  }
+
+  String text;
+  serializeJson(doc, text);
+  return sd_->writeTextAtomic(TodosPath, text);
+}
+
+bool AppStorage::loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) const {
+  outCount = 0;
+  if (!isReady() || !out || maxCount == 0) {
+    return false;
+  }
+
+  String text;
+  if (!sd_->readText(TodosPath, text, 8192)) {
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, text);
+  if (error) {
+    return false;
+  }
+
+  JsonArray todos = doc["todos"].as<JsonArray>();
+  if (todos.isNull()) {
+    return false;
+  }
+
+  for (JsonObject item : todos) {
+    if (outCount >= maxCount) {
+      break;
+    }
+    HubTodo& target = out[outCount];
+    target.id = item["id"] | 0;
+    target.text = item["text"] | "";
+    target.status = item["status"] | 0;
+    target.version = item["version"] | 0;
+    target.createdAt = item["created_at"] | "";
+    target.updatedAt = item["updated_at"] | "";
+    target.dirty = false;
+    if (target.id > 0 && target.text.length() > 0 && target.version > 0) {
+      ++outCount;
+    }
+  }
+
+  return outCount > 0;
+}
+
 bool AppStorage::loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_t& outCount) const {
   outCount = 0;
   if (!isReady() || !out || maxCount < 2) {

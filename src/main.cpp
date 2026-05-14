@@ -77,6 +77,8 @@ StoredWifiCredentials sdWifiCredentials;
 WifiCredential appSecretsWifiCredential = {AppSecrets::WifiSsid, AppSecrets::WifiPassword};
 BatteryCurvePoint sdBatteryCurve[BatteryMonitor::MaxExternalCurvePoints];
 HubMessage sdCachedMessages[HubService::MaxMessages];
+HubWeather sdCachedWeather;
+HubTodo sdCachedTodos[HubService::MaxTodos];
 
 void storageLog(const char* event, const char* detail, const char* level = "INFO") {
   if (!appStorage.isReady()) {
@@ -191,6 +193,19 @@ void setup() {
       messagesRestoredFromSd = true;
       bootLogf("messages: cached %u", static_cast<unsigned>(cachedMessageCount));
       storageLog("messages", "restored cache");
+    }
+
+    if (appStorage.loadWeather(sdCachedWeather)) {
+      hub.setWeather(sdCachedWeather);
+      bootLog("weather: cached");
+      storageLog("weather", "restored cache");
+    }
+
+    size_t cachedTodoCount = 0;
+    if (appStorage.loadTodos(sdCachedTodos, HubService::MaxTodos, cachedTodoCount)) {
+      hub.setTodos(sdCachedTodos, cachedTodoCount);
+      bootLogf("todos: cached %u", static_cast<unsigned>(cachedTodoCount));
+      storageLog("todos", "restored cache");
     }
   }
 

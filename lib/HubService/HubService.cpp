@@ -265,6 +265,11 @@ const HubWeather& HubService::weather() const {
   return weather_;
 }
 
+bool HubService::setWeather(const HubWeather& weather) {
+  weather_ = weather;
+  return weather_.valid;
+}
+
 size_t HubService::todoCount() const {
   return todoCount_;
 }
@@ -275,6 +280,20 @@ const HubTodo* HubService::todos() const {
 
 const HubTodo* HubService::todoAt(size_t index) const {
   return index < todoCount_ ? &todos_[index] : nullptr;
+}
+
+bool HubService::setTodos(const HubTodo* todos, size_t count) {
+  if (!todos && count > 0) {
+    return false;
+  }
+
+  todoCount_ = count < MaxTodos ? count : MaxTodos;
+  for (size_t i = 0; i < todoCount_; ++i) {
+    todos_[i] = todos[i];
+    todos_[i].dirty = false;
+  }
+  pendingTodoDeleteCount_ = 0;
+  return true;
 }
 
 HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot) {

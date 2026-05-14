@@ -170,6 +170,9 @@ void AppController::pollHubMessages(bool force) {
 void AppController::pollWeather(bool force) {
   const HubRequestResult result = hub_.pollWeather(force, wifi_.isConnected(), handleHubStateChanged);
   if (result.attempted) {
+    if (result.ok) {
+      storage_.saveWeather(hub_.weather());
+    }
     markUiDirty();
   }
 }
@@ -177,6 +180,9 @@ void AppController::pollWeather(bool force) {
 void AppController::pollTodos(bool force) {
   const HubRequestResult result = hub_.pollTodos(force, wifi_.isConnected(), handleHubStateChanged);
   if (result.attempted) {
+    if (result.ok) {
+      storage_.saveTodos(hub_.todos(), hub_.todoCount());
+    }
     updateSelectedTodoAfterChange();
     markUiDirty();
   }
