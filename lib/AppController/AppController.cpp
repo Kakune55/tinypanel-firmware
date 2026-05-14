@@ -11,12 +11,12 @@ AppController* activeController = nullptr;
 constexpr uint32_t kLightSleepMinMs = 20;
 constexpr uint32_t kLightSleepMaxMs = 120;
 constexpr uint8_t kSystemMenuStorage = 1;
-constexpr uint8_t kSystemMenuRefresh = 2;
-constexpr uint8_t kSystemMenuAction = 3;
-constexpr uint8_t kSystemMenuItemCount = 4;
-constexpr uint8_t kSystemActionClearMessages = 0;
-constexpr uint8_t kSystemActionBack = 1;
-constexpr uint8_t kSystemActionCount = 2;
+constexpr uint8_t kSystemMenuAction = 2;
+constexpr uint8_t kSystemMenuItemCount = 3;
+constexpr uint8_t kSystemActionSyncNow = 0;
+constexpr uint8_t kSystemActionClearMessages = 1;
+constexpr uint8_t kSystemActionBack = 2;
+constexpr uint8_t kSystemActionCount = 3;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
 
 }  // namespace
@@ -827,12 +827,6 @@ void AppController::handleSystemKeyClick() {
 }
 
 void AppController::handleSystemAction() {
-  if (state_.selectedSystemMenuItem == kSystemMenuRefresh) {
-    Serial.println("KEY: system refresh");
-    handleForcedRefresh();
-    markUiDirty();
-    return;
-  }
   if (state_.selectedSystemMenuItem == kSystemMenuAction) {
     if (!state_.systemActionFocused) {
       state_.systemActionFocused = true;
@@ -957,6 +951,12 @@ void AppController::handleButtons() {
       }
       if (state_.page == DesktopClockPage::System && state_.selectedSystemMenuItem == kSystemMenuAction &&
           state_.systemActionFocused) {
+        if (state_.selectedSystemAction == kSystemActionSyncNow) {
+          Serial.println("KEY: system refresh");
+          handleForcedRefresh();
+          markUiDirty();
+          return;
+        }
         if (state_.selectedSystemAction == kSystemActionClearMessages) {
           Serial.println("KEY: clear messages");
           handleSystemClearMessages();

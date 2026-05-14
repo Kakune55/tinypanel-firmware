@@ -548,12 +548,11 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   constexpr int detailY = 42;
   constexpr int rightX = 264;
   constexpr int detailW = 256;
-  const uint8_t selected = min(model.selectedSystemMenuItem, static_cast<uint8_t>(3));
+  const uint8_t selected = min(model.selectedSystemMenuItem, static_cast<uint8_t>(2));
 
   drawSystemMenuItem(display, menuX, menuY, menuW, "STATUS", selected == 0);
   drawSystemMenuItem(display, menuX, menuY + 40, menuW, "STORE", selected == 1);
-  drawSystemMenuItem(display, menuX, menuY + 80, menuW, "SYNC", selected == 2);
-  drawSystemMenuItem(display, menuX, menuY + 120, menuW, "ACTION", selected == 3 && !model.systemActionFocused);
+  drawSystemMenuItem(display, menuX, menuY + 80, menuW, "ACTION", selected == 2 && !model.systemActionFocused);
 
   display.drawFastVLine(124, 40, 214, true);
 
@@ -578,36 +577,33 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     snprintf(text, sizeof(text), "TODO %u", static_cast<unsigned>(model.todoCount));
     display.drawText(rightX, detailY + 104, text, true, 2);
   } else if (selected == 2) {
-    display.drawText(detailX, detailY, "REFRESH", true, 2);
-    display.drawText(detailX, detailY + 32, "DBL PRESS TO RUN", true, 1);
-    display.fillRect(detailX, detailY + 62, detailW, 62, true);
-    display.drawText(detailX + 42, detailY + 76, "RUN NOW", false, 3);
-    snprintf(text, sizeof(text), "WIFI %s", model.wifiConnected ? "ON" : "OFF");
-    display.drawText(detailX, detailY + 146, text, true, 2);
-    snprintf(text, sizeof(text), "NTP %s", model.ntpSyncing ? "SYNC" : (model.ntpSynced ? "OK" : "WAIT"));
-    display.drawText(rightX, detailY + 146, text, true, 2);
-    snprintf(text, sizeof(text), "HUB %s", model.hubSyncing ? "SYNC" : (model.hubSyncFailed ? "FAIL" : "OK"));
-    display.drawText(detailX, detailY + 180, text, true, 2);
-    snprintf(text, sizeof(text), "SD %s", model.sdMounted ? "READY" : model.sdStatus);
-    display.drawText(rightX, detailY + 180, text, true, 2);
-  } else if (selected == 3) {
+    constexpr int buttonGap = 12;
+    constexpr int buttonW = (detailW - buttonGap) / 2;
+    constexpr int buttonY = 62;
+    constexpr int rowGap = 46;
+    const int leftButtonX = detailX;
+    const int rightButtonX = detailX + buttonW + buttonGap;
+
     display.drawText(detailX, detailY, "ACTION", true, 2);
     display.drawText(detailX, detailY + 32, model.systemActionFocused ? "KEY MOVE  HOLD RUN" : "DBL FOCUS BUTTONS", true, 1);
     drawSystemActionButton(display,
-                           detailX,
-                           detailY + 62,
-                           detailW,
-                           "CLEAR MSG",
+                           leftButtonX,
+                           detailY + buttonY,
+                           buttonW,
+                           "SYNC NOW",
                            model.systemActionFocused && model.selectedSystemAction == 0);
     drawSystemActionButton(display,
-                           detailX,
-                           detailY + 108,
-                           detailW,
-                           "BACK",
+                           rightButtonX,
+                           detailY + buttonY,
+                           buttonW,
+                           "CLEAR MSG",
                            model.systemActionFocused && model.selectedSystemAction == 1);
-    snprintf(text, sizeof(text), "MSG %u", static_cast<unsigned>(model.messageCount));
-    display.drawText(detailX, detailY + 166, text, true, 2);
-    display.drawText(detailX, detailY + 198, "LOCAL CACHE ONLY", true, 1);
+    drawSystemActionButton(display,
+                           leftButtonX,
+                           detailY + buttonY + rowGap,
+                           buttonW,
+                           "BACK",
+                           model.systemActionFocused && model.selectedSystemAction == 2);
   } else {
     display.drawText(detailX, detailY, "BATTERY", true, 2);
     snprintf(text, sizeof(text), "%.2f%%", model.battery.percentFloat);
@@ -662,7 +658,7 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   }
 
   display.drawText(24, 270, model.systemActionFocused ? "KEY BUTTON" : "KEY MENU", true, 1);
-  display.drawText(132, 270, model.systemActionFocused ? "HOLD RUN" : "DBL RUN", true, 1);
+  display.drawText(132, 270, selected == 2 ? (model.systemActionFocused ? "HOLD RUN" : "DBL FOCUS") : "DBL --", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }
