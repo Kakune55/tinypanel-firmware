@@ -21,6 +21,7 @@ bool WifiManager::begin(const WifiCredential* credentials, size_t credentialCoun
   credentials_ = credentials;
   credentialCount_ = credentialCount;
   activeCredential_ = 0;
+  hasActiveCredential_ = false;
 
   WiFi.mode(WIFI_STA);
   enableMaxModemSleep();
@@ -49,6 +50,18 @@ bool WifiManager::connect(uint32_t timeoutMs) {
   }
 
   const uint32_t startMs = millis();
+  if (hasActiveCredential_ && credentialValid(activeCredential_)) {
+    const uint32_t quickTimeoutMs = min<uint32_t>(timeoutMs, 5000);
+    Serial.println("WiFi: reconnecting to last network");
+    if (connectCredential(activeCredential_, quickTimeoutMs)) {
+      return true;
+    }
+    if (millis() - startMs >= timeoutMs) {
+      Serial.println("WiFi: connect failed");
+      return false;
+    }
+  }
+
   constexpr size_t kMaxScanCandidates = 8;
   size_t scanCandidates[kMaxScanCandidates];
   size_t scanCandidateCount = 0;
@@ -111,25 +124,8 @@ bool WifiManager::connect(uint32_t timeoutMs) {
       break;
     }
 
-    const WifiCredential& credential = credentials_[index];
-    Serial.printf("WiFi: connecting to %s\n", credential.ssid);
-    WiFi.disconnect(false, false);
-    delay(100);
-    WiFi.begin(credential.ssid, credential.password);
-
-    const uint32_t attemptStartMs = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - attemptStartMs < perNetworkMs &&
-           millis() - startMs < timeoutMs) {
-      delay(250);
-      Serial.print(".");
-    }
-    Serial.println();
-
-    if (WiFi.status() == WL_CONNECTED) {
-      activeCredential_ = index;
-      updateSignal();
-      Serial.printf("WiFi: connected to %s, IP=%s, RSSI=%d dBm\n", WiFi.SSID().c_str(), ipAddress().c_str(), rssi());
-      enableMaxModemSleep();
+    const uint32_t remainingMs = timeoutMs - (millis() - startMs);
+    if (connectCredential(index, min(perNetworkMs, remainingMs))) {
       return true;
     }
   }
@@ -174,10 +170,40 @@ String WifiManager::ssid() const {
   if (isConnected()) {
     return WiFi.SSID();
   }
-  return credentialValid(activeCredential_) ? String(credentials_[activeCredential_].ssid) : String();
+  return hasActiveCredential_ && credentialValid(activeCredential_) ? String(credentials_[activeCredential_].ssid) : String();
 }
 
 bool WifiManager::credentialValid(size_t index) const {
   return credentials_ != nullptr && index < credentialCount_ && credentials_[index].ssid != nullptr &&
          credentials_[index].ssid[0] != '\0';
+}
+
+bool WifiManager::connectCredential(size_t index, uint32_t timeoutMs) {
+  if (!credentialValid(index) || timeoutMs == 0) {
+    return false;
+  }
+
+  const WifiCredential& credential = credentials_[index];
+  Serial.printf("WiFi: connecting to %s\n", credential.ssid);
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.begin(credential.ssid, credential.password);
+
+  const uint32_t attemptStartMs = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - attemptStartMs < timeoutMs) {
+    delay(250);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  activeCredential_ = index;
+  hasActiveCredential_ = true;
+  updateSignal();
+  Serial.printf("WiFi: connected to %s, IP=%s, RSSI=%d dBm\n", WiFi.SSID().c_str(), ipAddress().c_str(), rssi());
+  enableMaxModemSleep();
+  return true;
 }

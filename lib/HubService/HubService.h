@@ -176,18 +176,23 @@ private:
   HubRequestResult ackMessage(int id);
   void storeMessage(const HubMessage& message);
   bool hasMessage(int id) const;
-  HubRequestResult postJson(const char* path, const String& body, const char* label);
-  HubRequestResult patchJson(const char* path, const String& body, JsonDocument* response, const char* label);
-  HubRequestResult deleteJson(const char* path, const String& body, const char* label);
+  HubRequestResult postJson(const char* path, const char* body, size_t bodyLen, const char* label);
+  HubRequestResult patchJson(const char* path, const char* body, size_t bodyLen, JsonDocument* response, const char* label);
+  HubRequestResult deleteJson(const char* path, const char* body, size_t bodyLen, const char* label);
   HubRequestResult getJson(const char* path, JsonDocument& doc, const char* label);
-  HubRequestResult requestJson(const char* method, const char* path, const String* body, JsonDocument* response, const char* label);
+  HubRequestResult requestJson(const char* method,
+                               const char* path,
+                               const char* body,
+                               size_t bodyLen,
+                               JsonDocument* response,
+                               const char* label);
   bool telemetryDue(bool force, uint32_t nowMs) const;
   bool messagePollDue(bool force, uint32_t nowMs) const;
   bool weatherPollDue(bool force, uint32_t nowMs) const;
   bool todoPollDue(bool force, uint32_t nowMs) const;
   void beginRequest(uint32_t nowMs, HubStateChangedCallback onStateChanged);
   void completeRequest(const HubRequestResult& result, uint32_t nowMs);
-  String urlEncode(const String& value) const;
+  bool urlEncode(const char* value, char* out, size_t outSize) const;
   bool timeReached(uint32_t nowMs, uint32_t targetMs) const;
   bool hasUsableCredential(const char* value) const;
 
@@ -226,4 +231,6 @@ private:
   size_t pendingTodoDeleteCount_ = 0;
   WiFiClient client_;
   WiFiClientSecure secureClient_;
+  JsonDocument jsonDoc_;
+  JsonDocument responseDoc_;
 };

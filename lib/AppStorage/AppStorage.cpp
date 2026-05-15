@@ -373,6 +373,7 @@ bool AppStorage::saveWeather(const HubWeather& weather) {
   }
 
   String text;
+  text.reserve(measureJson(doc) + 1);
   serializeJson(doc, text);
   return sd_->writeTextAtomic(WeatherPath, text);
 }
@@ -469,6 +470,7 @@ bool AppStorage::saveTodos(const HubTodo* todos, size_t count) {
   }
 
   String text;
+  text.reserve(measureJson(doc) + 1);
   serializeJson(doc, text);
   return sd_->writeTextAtomic(TodosPath, text);
 }

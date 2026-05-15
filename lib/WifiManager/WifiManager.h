@@ -20,10 +20,12 @@ public:
 
 private:
   bool credentialValid(size_t index) const;
+  bool connectCredential(size_t index, uint32_t timeoutMs);
 
   WifiCredential singleCredential_ = {nullptr, nullptr};
   const WifiCredential* credentials_ = nullptr;
   size_t credentialCount_ = 0;
   size_t activeCredential_ = 0;
+  bool hasActiveCredential_ = false;
   int cachedRssi_ = 0;
 };
