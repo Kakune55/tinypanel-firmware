@@ -21,6 +21,26 @@ constexpr spi_host_device_t kSpiHost = SPI3_HOST;
 
 esp_lcd_panel_io_handle_t g_ioHandle = nullptr;
 
+inline uint32_t pixelIndex(int x, int y, uint8_t& mask) {
+  const uint16_t invY = BoardConfig::RlcdHeight - 1 - y;
+  const uint16_t byteX = x >> 1;
+  const uint16_t blockY = invY >> 2;
+  const uint8_t localX = x & 0x01;
+  const uint8_t localY = invY & 0x03;
+  mask = 1U << (7 - ((localY << 1) | localX));
+  return byteX * (BoardConfig::RlcdHeight >> 2) + blockY;
+}
+
+inline void writePixelUnchecked(uint8_t* buffer, int x, int y, bool black) {
+  uint8_t mask = 0;
+  const uint32_t index = pixelIndex(x, y, mask);
+  if (black) {
+    buffer[index] &= ~mask;
+  } else {
+    buffer[index] |= mask;
+  }
+}
+
 }  // namespace
 
 bool RlcdDisplay::begin() {
@@ -110,20 +130,7 @@ void RlcdDisplay::setPixel(int x, int y, bool black) {
     return;
   }
 
-  const uint16_t invY = BoardConfig::RlcdHeight - 1 - y;
-  const uint16_t byteX = x >> 1;
-  const uint16_t blockY = invY >> 2;
-  const uint32_t index = byteX * (BoardConfig::RlcdHeight >> 2) + blockY;
-  const uint8_t localX = x & 0x01;
-  const uint8_t localY = invY & 0x03;
-  const uint8_t bit = 7 - ((localY << 1) | localX);
-  const uint8_t mask = 1U << bit;
-
-  if (black) {
-    buffer_[index] &= ~mask;
-  } else {
-    buffer_[index] |= mask;
-  }
+  writePixelUnchecked(buffer_, x, y, black);
 }
 
 void RlcdDisplay::invertPixel(int x, int y) {
@@ -131,15 +138,9 @@ void RlcdDisplay::invertPixel(int x, int y) {
     return;
   }
 
-  const uint16_t invY = BoardConfig::RlcdHeight - 1 - y;
-  const uint16_t byteX = x >> 1;
-  const uint16_t blockY = invY >> 2;
-  const uint32_t index = byteX * (BoardConfig::RlcdHeight >> 2) + blockY;
-  const uint8_t localX = x & 0x01;
-  const uint8_t localY = invY & 0x03;
-  const uint8_t bit = 7 - ((localY << 1) | localX);
-
-  buffer_[index] ^= 1U << bit;
+  uint8_t mask = 0;
+  const uint32_t index = pixelIndex(x, y, mask);
+  buffer_[index] ^= mask;
 }
 
 void RlcdDisplay::drawLine(int x0, int y0, int x1, int y1, bool black) {
@@ -177,26 +178,51 @@ void RlcdDisplay::drawLine(int x0, int y0, int x1, int y1, bool black) {
 }
 
 void RlcdDisplay::drawFastHLine(int x, int y, int w, bool black) {
-  if (w <= 0 || y < 0 || y >= BoardConfig::RlcdHeight || x >= BoardConfig::RlcdWidth) {
+  if (buffer_ == nullptr || w <= 0 || y < 0 || y >= BoardConfig::RlcdHeight || x >= BoardConfig::RlcdWidth) {
     return;
   }
 
   int xStart = std::max(0, x);
   int xEnd = std::min(BoardConfig::RlcdWidth, x + w);
-  for (int xx = xStart; xx < xEnd; ++xx) {
-    setPixel(xx, y, black);
+  if (xStart >= xEnd) {
+    return;
+  }
+
+  const uint16_t invY = BoardConfig::RlcdHeight - 1 - y;
+  const uint16_t blockY = invY >> 2;
+  const uint8_t localY = invY & 0x03;
+  const uint8_t pairMask = static_cast<uint8_t>(0xC0 >> (localY << 1));
+  const uint16_t stride = BoardConfig::RlcdHeight >> 2;
+
+  if ((xStart & 0x01) != 0) {
+    writePixelUnchecked(buffer_, xStart, y, black);
+    ++xStart;
+  }
+
+  while (xStart + 1 < xEnd) {
+    const uint32_t index = static_cast<uint32_t>(xStart >> 1) * stride + blockY;
+    if (black) {
+      buffer_[index] &= ~pairMask;
+    } else {
+      buffer_[index] |= pairMask;
+    }
+    xStart += 2;
+  }
+
+  if (xStart < xEnd) {
+    writePixelUnchecked(buffer_, xStart, y, black);
   }
 }
 
 void RlcdDisplay::drawFastVLine(int x, int y, int h, bool black) {
-  if (h <= 0 || x < 0 || x >= BoardConfig::RlcdWidth || y >= BoardConfig::RlcdHeight) {
+  if (buffer_ == nullptr || h <= 0 || x < 0 || x >= BoardConfig::RlcdWidth || y >= BoardConfig::RlcdHeight) {
     return;
   }
 
   int yStart = std::max(0, y);
   int yEnd = std::min(BoardConfig::RlcdHeight, y + h);
   for (int yy = yStart; yy < yEnd; ++yy) {
-    setPixel(x, yy, black);
+    writePixelUnchecked(buffer_, x, yy, black);
   }
 }
 

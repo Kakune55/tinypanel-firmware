@@ -3,6 +3,8 @@
 #include "BoardConfig.h"
 #include "Utf8Text.h"
 
+#include <cmath>
+
 #include "esp_sleep.h"
 
 namespace {
@@ -18,6 +20,30 @@ constexpr uint8_t kSystemActionClearMessages = 1;
 constexpr uint8_t kSystemActionBack = 2;
 constexpr uint8_t kSystemActionCount = 3;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
+constexpr float kBatteryVoltageDirtyDelta = 0.03f;
+constexpr float kBatteryPercentDirtyDelta = 1.0f;
+constexpr float kTemperatureDirtyDelta = 0.1f;
+constexpr float kHumidityDirtyDelta = 0.5f;
+
+bool batteryDisplayChanged(const BatteryStatus& before, const BatteryStatus& after) {
+  return before.percent != after.percent ||
+         before.charging != after.charging ||
+         before.low != after.low ||
+         before.critical != after.critical ||
+         std::fabs(before.voltage - after.voltage) >= kBatteryVoltageDirtyDelta ||
+         std::fabs(before.percentFloat - after.percentFloat) >= kBatteryPercentDirtyDelta;
+}
+
+bool environmentDisplayChanged(const Shtc3Reading& before, const Shtc3Reading& after) {
+  if (before.valid != after.valid) {
+    return true;
+  }
+  if (!after.valid) {
+    return false;
+  }
+  return std::fabs(before.temperatureC - after.temperatureC) >= kTemperatureDirtyDelta ||
+         std::fabs(before.humidityRh - after.humidityRh) >= kHumidityDirtyDelta;
+}
 
 }  // namespace
 
@@ -87,10 +113,18 @@ bool AppController::ntpSynced() const {
 }
 
 void AppController::readSensors(bool force) {
-  state_.battery = battery_.readStatus();
-  shtc3_.read(state_.environment);
+  const BatteryStatus previousBattery = state_.battery;
+  const Shtc3Reading previousEnvironment = state_.environment;
+  const int previousEtaMinutes = state_.batteryEtaMinutes;
+
+  BatteryStatus nextBattery = battery_.readStatus();
+  Shtc3Reading nextEnvironment;
+  shtc3_.read(nextEnvironment);
+  state_.battery = nextBattery;
+  state_.environment = nextEnvironment;
   readRtc(force);
   updateBatteryRuntimeEstimate();
+
   const uint32_t nowMs = millis();
   if (storage_.isReady() &&
       (force || state_.lastBatteryLogMs == 0 || nowMs - state_.lastBatteryLogMs >= config_.batteryLogIntervalMs)) {
@@ -98,7 +132,13 @@ void AppController::readSensors(bool force) {
       state_.lastBatteryLogMs = nowMs;
     }
   }
-  markUiDirty();
+
+  if (force ||
+      batteryDisplayChanged(previousBattery, state_.battery) ||
+      environmentDisplayChanged(previousEnvironment, state_.environment) ||
+      previousEtaMinutes != state_.batteryEtaMinutes) {
+    markUiDirty();
+  }
 }
 
 void AppController::readRtc(bool force) {

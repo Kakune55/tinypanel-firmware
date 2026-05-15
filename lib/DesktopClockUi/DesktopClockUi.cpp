@@ -419,8 +419,11 @@ void drawMessagePage(RlcdDisplay& display, StatusBar& statusBar, const DesktopCl
   const size_t selected = min(model.selectedMessage, model.messageCount - 1);
   constexpr int itemY = topY + 14;
   constexpr int itemH = 30;
-  for (size_t i = 0; i < model.messageCount && i < 7; ++i) {
-    const int y = itemY + static_cast<int>(i) * itemH;
+  constexpr size_t visibleMessages = 7;
+  const size_t listStart = (selected / visibleMessages) * visibleMessages;
+  const size_t listEnd = min(model.messageCount, listStart + visibleMessages);
+  for (size_t i = listStart; i < listEnd; ++i) {
+    const int y = itemY + static_cast<int>(i - listStart) * itemH;
     const bool active = i == selected;
     if (active) {
       display.fillRect(listX, y, listW, itemH + 1, true); 
