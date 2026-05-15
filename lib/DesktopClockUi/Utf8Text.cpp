@@ -2,9 +2,8 @@
 
 #include <cstring>
 
-#include "GB2312Map.h"
-#include "HZK16.h"
 #include "PixelFont5x7.h"
+#include "UnicodeFont16.h"
 
 namespace {
 
@@ -227,36 +226,20 @@ void drawMissing(RlcdDisplay& display, int x, int y, bool black) {
 }
 
 void drawCjk(RlcdDisplay& display, int x, int y, uint32_t codepoint, bool black) {
-  const uint16_t gb2312 = GB2312Map::toGb2312(codepoint);
-  if (gb2312 == 0) {
-    drawMissing(display, x, y, black);
-    return;
-  }
-
-  const uint8_t area = static_cast<uint8_t>(gb2312 >> 8);
-  const uint8_t index = static_cast<uint8_t>(gb2312 & 0xFF);
-  if (area < 0xA1 || area > 0xFE || index < 0xA1 || index > 0xFE) {
-    drawMissing(display, x, y, black);
-    return;
-  }
-
-  const uint32_t offset = ((area - 0xA1) * 94UL + (index - 0xA1)) * 32UL;
-  if (offset + 32 > HZK16::Size) {
-    drawMissing(display, x, y, black);
-    return;
-  }
-
-  const uint8_t* bitmap = HZK16::Data + offset;
-
-  for (int row = 0; row < 16; ++row) {
-    for (int col = 0; col < 16; ++col) {
-      const uint8_t byte = bitmap[row * 2 + (col >> 3)];
-      if ((byte & (0x80 >> (col & 0x07))) == 0) {
-        continue;
+  uint8_t unicodeBitmap[UnicodeFont16::GlyphBytes];
+  if (UnicodeFont16::readGlyph(codepoint, unicodeBitmap)) {
+    for (int row = 0; row < UnicodeFont16::Height; ++row) {
+      for (int col = 0; col < UnicodeFont16::Width; ++col) {
+        const uint8_t byte = unicodeBitmap[row * 2 + (col >> 3)];
+        if ((byte & (0x80 >> (col & 0x07))) == 0) {
+          continue;
+        }
+        display.setPixel(x + col, y + row, black);
       }
-      display.setPixel(x + col, y + row, black);
     }
+    return;
   }
+  drawMissing(display, x, y, black);
 }
 
 void drawCodepoint(RlcdDisplay& display, int x, int y, uint32_t codepoint, bool black) {
@@ -324,7 +307,12 @@ void drawWrapped(RlcdDisplay& display,
 
   int cursorX = x;
   uint16_t logicalLine = 0;
+  uint16_t processed = 0;
   for (size_t index = 0; index < text.length();) {
+    if ((++processed & 0x3F) == 0) {
+      yield();
+    }
+
     InlineBitmap bitmap;
     if (parseInlineBitmapAt(text, index, bitmap)) {
       if (cursorX > x) {
@@ -386,7 +374,12 @@ uint16_t wrappedLineCount(const String& text, int maxWidth) {
 
   uint16_t lines = 1;
   int cursor = 0;
+  uint16_t processed = 0;
   for (size_t index = 0; index < text.length();) {
+    if ((++processed & 0x7F) == 0) {
+      yield();
+    }
+
     InlineBitmap bitmap;
     if (parseInlineBitmapAt(text, index, bitmap)) {
       if (cursor > 0) {

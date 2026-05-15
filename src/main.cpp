@@ -8,6 +8,7 @@
 #include "AppStorage.h"
 #include "BoardConfig.h"
 #include "I2cScanner.h"
+#include "UnicodeFont16.h"
 #include "WifiCredential.h"
 
 #if __has_include("AppSecrets.h")
@@ -167,6 +168,15 @@ void setup() {
   bootLogf("psram: %s", psramFound() ? "yes" : "no");
   bootLogf("flash: %lu KB", static_cast<unsigned long>(ESP.getFlashChipSize() / 1024UL));
   bootLogMemory("display");
+
+  bootLog("font: mount unicode16");
+  const bool unicodeFontOk = UnicodeFont16::begin();
+  bootLogf("font: %s %lu", unicodeFontOk ? "unicode16" : "hzk16",
+           static_cast<unsigned long>(UnicodeFont16::glyphCount()));
+  if (!unicodeFontOk) {
+    Serial.printf("Font: Unicode16 unavailable: %s\n", UnicodeFont16::lastErrorText());
+    bootLogf("font err: %s", UnicodeFont16::lastErrorText());
+  }
 
   bootLog("i2c: scanning bus");
   i2cScanner.begin(BoardConfig::I2cSda, BoardConfig::I2cScl);
