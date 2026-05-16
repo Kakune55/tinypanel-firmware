@@ -145,9 +145,11 @@ class AppController {
     size_t batteryHistoryCount = 0;
     size_t batteryHistoryNext = 0;
     int batteryEtaMinutes = -1;
+    bool hasBatteryEtaEstimate = false;
     bool hasBatteryEtaFilter = false;
     bool batteryEtaWasCharging = false;
     float batteryEtaFilteredPercent = 0.0f;
+    uint32_t lastBatteryEtaSampleS = 0;
     uint32_t lastActivityMs = 0;
     uint8_t currentCpuMhz = 0;
   };

@@ -602,20 +602,26 @@ void AppController::updateSelectedTodoAfterChange() {
 
 void AppController::updateBatteryRuntimeEstimate() {
   const uint32_t nowS = millis() / 1000UL;
-  constexpr float kFilterAlpha = 0.25f;
-  constexpr float kMaxSingleSampleDropPercent = 8.0f;
-  constexpr float kMaxDischargeRecoveryPercent = 0.2f;
+  constexpr float kFilterAlpha = 0.18f;
+  constexpr float kEtaSmoothingAlpha = 0.25f;
+  constexpr float kMaxSingleSampleDropPercent = 3.0f;
+  constexpr float kMaxSingleSampleRisePercent = 1.0f;
+  constexpr float kMaxDischargeRecoveryPercent = 0.12f;
   constexpr float kMinSlopePercentPerHour = 0.25f;
-  constexpr float kMaxSlopePercentPerHour = 80.0f;
-  constexpr uint32_t kMinElapsedS = 15UL * 60UL;
-  constexpr size_t kMinSamples = 12;
-  constexpr float kMinEstimatedDropPercent = 1.5f;
+  constexpr float kMaxSlopePercentPerHour = 30.0f;
+  constexpr uint32_t kMinBootAgeS = 20UL * 60UL;
+  constexpr uint32_t kMinSampleIntervalS = 4UL * 60UL;
+  constexpr uint32_t kMinElapsedS = 35UL * 60UL;
+  constexpr size_t kMinSamples = 8;
+  constexpr float kMinEstimatedDropPercent = 1.0f;
 
-  state_.batteryEtaMinutes = -1;
   if (state_.battery.charging || state_.battery.percentFloat <= 0.0f) {
     state_.batteryHistoryCount = 0;
     state_.batteryHistoryNext = 0;
     state_.hasBatteryEtaFilter = false;
+    state_.hasBatteryEtaEstimate = false;
+    state_.lastBatteryEtaSampleS = 0;
+    state_.batteryEtaMinutes = -1;
     state_.batteryEtaWasCharging = state_.battery.charging;
     return;
   }
@@ -624,7 +630,14 @@ void AppController::updateBatteryRuntimeEstimate() {
     state_.batteryHistoryCount = 0;
     state_.batteryHistoryNext = 0;
     state_.hasBatteryEtaFilter = false;
+    state_.hasBatteryEtaEstimate = false;
+    state_.lastBatteryEtaSampleS = 0;
+    state_.batteryEtaMinutes = -1;
     state_.batteryEtaWasCharging = false;
+  }
+
+  if (nowS < kMinBootAgeS) {
+    return;
   }
 
   float filteredPercent = state_.battery.percentFloat;
@@ -642,14 +655,17 @@ void AppController::updateBatteryRuntimeEstimate() {
   if (state_.batteryHistoryCount > 0) {
     const State::BatteryHistoryPoint& previous =
         state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
-    if (previous.percent - filteredPercent > kMaxSingleSampleDropPercent) {
-      state_.batteryHistoryCount = 0;
-      state_.batteryHistoryNext = 0;
-      state_.hasBatteryEtaFilter = false;
+    const float sampleDelta = filteredPercent - previous.percent;
+    if (-sampleDelta > kMaxSingleSampleDropPercent || sampleDelta > kMaxSingleSampleRisePercent) {
       return;
     }
   }
   state_.batteryEtaFilteredPercent = filteredPercent;
+
+  if (state_.lastBatteryEtaSampleS != 0 && nowS - state_.lastBatteryEtaSampleS < kMinSampleIntervalS) {
+    return;
+  }
+  state_.lastBatteryEtaSampleS = nowS;
 
   state_.batteryHistory[state_.batteryHistoryNext].uptimeS = nowS;
   state_.batteryHistory[state_.batteryHistoryNext].percent = filteredPercent;
@@ -704,7 +720,14 @@ void AppController::updateBatteryRuntimeEstimate() {
 
   const float etaMinutes = newest.percent / dischargePercentPerHour * 60.0f;
   if (etaMinutes > 0.0f && etaMinutes < 10000.0f) {
-    state_.batteryEtaMinutes = static_cast<int>(etaMinutes + 0.5f);
+    if (state_.hasBatteryEtaEstimate && state_.batteryEtaMinutes >= 0) {
+      const float smoothedEta = state_.batteryEtaMinutes +
+                                kEtaSmoothingAlpha * (etaMinutes - static_cast<float>(state_.batteryEtaMinutes));
+      state_.batteryEtaMinutes = static_cast<int>(smoothedEta + 0.5f);
+    } else {
+      state_.batteryEtaMinutes = static_cast<int>(etaMinutes + 0.5f);
+      state_.hasBatteryEtaEstimate = true;
+    }
   }
 }
 
