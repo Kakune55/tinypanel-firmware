@@ -37,8 +37,16 @@ struct StoredDeviceConfig {
   bool loaded = false;
 };
 
+struct StoredBatteryHistoryPoint {
+  uint32_t absoluteMinute = 0;
+  float percent = 0.0f;
+  bool charging = false;
+};
+
 class AppStorage {
  public:
+  static constexpr size_t MaxBatteryHistoryPoints = 240;
+
   bool begin(SdCardStorage& sd);
   bool isReady() const;
 
@@ -51,6 +59,7 @@ class AppStorage {
   bool saveTodos(const HubTodo* todos, size_t count);
   bool loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) const;
   bool loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_t& outCount) const;
+  bool loadBatteryHistory(StoredBatteryHistoryPoint* out, size_t maxCount, size_t& outCount) const;
   bool appendBatterySample(const BatteryStatus& battery, const RtcDateTime& now, uint32_t uptimeS);
   bool appendSystemLog(const RtcDateTime& now, uint32_t uptimeS, const char* level, const char* event, const char* detail);
 
@@ -76,6 +85,11 @@ class AppStorage {
   String systemLogPath(const RtcDateTime& now) const;
   String timestampOrUptime(const RtcDateTime& now, uint32_t uptimeS) const;
   bool parseBatteryCurveLine(const String& line, BatteryCurvePoint& out) const;
+  bool parseBatteryHistoryLine(const String& line, StoredBatteryHistoryPoint& out) const;
+  bool loadBatteryHistoryFile(const char* path,
+                              StoredBatteryHistoryPoint* out,
+                              size_t maxCount,
+                              size_t& outCount) const;
 
   SdCardStorage* sd_ = nullptr;
   bool ready_ = false;

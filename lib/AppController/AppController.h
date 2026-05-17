@@ -22,6 +22,7 @@ struct AppControllerConfig {
   uint32_t hubSyncWindowMs = 60000;
   uint8_t telemetryEveryHubSyncWindows = 5;
   uint32_t wifiRetryMs = 30000;
+  uint8_t wifiMaxFailures = 3;
   uint32_t ntpRetryMs = 10UL * 60UL * 1000UL;
   uint32_t ntpUnsyncedRetryMs = 30000;
   uint32_t keyDoubleClickMs = 350;
@@ -70,6 +71,7 @@ class AppController {
   void pollWeather(bool force = false);
   void pollTodos(bool force = false);
   void runInitialHubSyncNow();
+  void restoreBatteryHistoryFromStorage();
   void loopOnce();
 
  private:
@@ -99,6 +101,8 @@ class AppController {
       float percent = 0.0f;
     };
 
+    static constexpr size_t BatteryChartSize = AppStorage::MaxBatteryHistoryPoints;
+
     BatteryStatus battery;
     Shtc3Reading environment;
     RtcDateTime now;
@@ -108,6 +112,9 @@ class AppController {
     bool ntpSyncFailed = false;
     bool sdMounted = false;
     bool wifiConfigFromSd = false;
+    bool wifiDisabled = false;
+    bool wifiAutoDisabled = false;
+    uint8_t wifiFailureCount = 0;
     bool batteryCurveFromSd = false;
     bool messagesRestoredFromSd = false;
     bool uiDirty = true;
@@ -150,6 +157,10 @@ class AppController {
     bool batteryEtaWasCharging = false;
     float batteryEtaFilteredPercent = 0.0f;
     uint32_t lastBatteryEtaSampleS = 0;
+    BatteryChartPoint batteryChart[BatteryChartSize];
+    size_t batteryChartCount = 0;
+    uint32_t batteryChartStartMinute = 0;
+    uint32_t batteryChartLastAbsoluteMinute = 0;
     uint32_t lastActivityMs = 0;
     uint8_t currentCpuMhz = 0;
   };
@@ -172,6 +183,9 @@ class AppController {
   void handleForcedRefresh();
   void updateSelectedTodoAfterChange();
   void updateBatteryRuntimeEstimate();
+  void appendBatteryChartSample(const BatteryStatus& battery);
+  void resetBatteryWindow();
+  void rebuildBatteryChartPrediction(DesktopClockUiModel& model) const;
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;
   void handleMessageKeyClick();
@@ -183,6 +197,8 @@ class AppController {
   void handleSystemKeyClick();
   void handleSystemAction();
   void handleSystemClearMessages();
+  void handleSystemWifiToggle();
+  void handleSystemResetBattery();
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();

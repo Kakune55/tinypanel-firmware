@@ -1,6 +1,7 @@
 #include "BatteryMonitor.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "BoardConfig.h"
 
@@ -106,11 +107,17 @@ constexpr BatteryCurvePoint kBatteryCurve[] = {
     {1175, 0.00f},
 };
 
-constexpr int kPlugInAdcStep = 20;
-constexpr int kChargingRiseAdc = 3;
-constexpr int kChargingFallAdc = 3;
-constexpr int kChargingRiseSamples = 2;
-constexpr int kChargingFallSamples = 2;
+constexpr int kImmediatePlugInAdcStep = 35;
+constexpr int kImmediatePlugOutAdcStep = 35;
+constexpr int kNoiseAdc = 3;
+constexpr int kChargingRiseAdc = 6;
+constexpr int kChargingFallAdc = 8;
+constexpr int kChargingRiseSamples = 3;
+constexpr int kChargingFallSamples = 3;
+constexpr int kChargingRiseTotalAdc = 18;
+constexpr int kChargingRiseTotalNearFullAdc = 16;
+constexpr int kChargingFallTotalAdc = 18;
+constexpr int kNearFullRawAdc = 1625;
 
 }  // namespace
 
@@ -204,40 +211,70 @@ bool BatteryMonitor::updateChargingState(int rawAdc) const {
   if (!hasLastRawAdc_) {
     hasLastRawAdc_ = true;
     lastRawAdc_ = rawAdc;
+    riseAnchorRawAdc_ = rawAdc;
+    fallAnchorRawAdc_ = rawAdc;
     return charging_;
   }
 
-  const int delta = rawAdc - lastRawAdc_;
-  lastRawAdc_ = rawAdc;
+  const int previousRawAdc = lastRawAdc_;
+  const int delta = rawAdc - previousRawAdc;
 
-  if (delta >= kPlugInAdcStep) {
-    risingSamples_ = kChargingRiseSamples;
+  auto resetRise = [&]() {
+    risingSamples_ = 0;
+    riseAnchorRawAdc_ = rawAdc;
+  };
+  auto resetFall = [&]() {
+    fallingSamples_ = 0;
+    fallAnchorRawAdc_ = rawAdc;
+  };
+
+  if (delta >= kImmediatePlugInAdcStep) {
+    risingSamples_ = 0;
     fallingSamples_ = 0;
     charging_ = true;
+    riseAnchorRawAdc_ = rawAdc;
+    fallAnchorRawAdc_ = rawAdc;
+    lastRawAdc_ = rawAdc;
     return charging_;
   }
 
-  if (delta <= -kPlugInAdcStep) {
+  if (delta <= -kImmediatePlugOutAdcStep) {
     risingSamples_ = 0;
-    fallingSamples_ = kChargingFallSamples;
+    fallingSamples_ = 0;
     charging_ = false;
+    riseAnchorRawAdc_ = rawAdc;
+    fallAnchorRawAdc_ = rawAdc;
+    lastRawAdc_ = rawAdc;
     return charging_;
   }
 
   if (delta >= kChargingRiseAdc) {
-    ++risingSamples_;
-    fallingSamples_ = 0;
-    if (risingSamples_ >= kChargingRiseSamples) {
+    if (risingSamples_ == 0) {
+      riseAnchorRawAdc_ = previousRawAdc;
+    }
+    risingSamples_ = std::min(risingSamples_ + 1, kChargingRiseSamples);
+    resetFall();
+    const int requiredRise = rawAdc >= kNearFullRawAdc ? kChargingRiseTotalNearFullAdc : kChargingRiseTotalAdc;
+    if (!charging_ && risingSamples_ >= kChargingRiseSamples && rawAdc - riseAnchorRawAdc_ >= requiredRise) {
       charging_ = true;
+      resetRise();
     }
   } else if (delta <= -kChargingFallAdc) {
-    risingSamples_ = 0;
-    ++fallingSamples_;
-    if (fallingSamples_ >= kChargingFallSamples) {
-      charging_ = false;
+    if (fallingSamples_ == 0) {
+      fallAnchorRawAdc_ = previousRawAdc;
     }
+    fallingSamples_ = std::min(fallingSamples_ + 1, kChargingFallSamples);
+    resetRise();
+    if (charging_ && fallingSamples_ >= kChargingFallSamples && fallAnchorRawAdc_ - rawAdc >= kChargingFallTotalAdc) {
+      charging_ = false;
+      resetFall();
+    }
+  } else if (std::abs(delta) > kNoiseAdc) {
+    resetRise();
+    resetFall();
   }
 
+  lastRawAdc_ = rawAdc;
   return charging_;
 }
 

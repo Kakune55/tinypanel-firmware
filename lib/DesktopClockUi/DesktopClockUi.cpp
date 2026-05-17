@@ -516,7 +516,7 @@ void drawSystemActionRow(RlcdDisplay& display,
                          const char* note,
                          bool active,
                          bool focused) {
-  constexpr int h = 42;
+  constexpr int h = 28;
   if (active) {
     display.fillRect(x, y, w, h, true);
   } else if (focused) {
@@ -525,11 +525,11 @@ void drawSystemActionRow(RlcdDisplay& display,
     display.drawFastHLine(x, y + h - 1, w, true);
   }
 
-  display.drawText(x + 8, y + 8, number, !active, 2);
-  display.drawText(x + 40, y + 7, label, !active, 2);
-  display.drawText(x + 42, y + 27, note, !active, 1);
+  display.drawText(x + 8, y + 4, number, !active, 1);
+  display.drawText(x + 32, y + 3, label, !active, 2);
+  display.drawText(x + 134, y + 9, note, !active, 1);
   if (active) {
-    display.drawText(x + w - 28, y + 12, ">", false, 2);
+    display.drawText(x + w - 16, y + 6, ">", false, 1);
   }
 }
 
@@ -554,6 +554,69 @@ void drawResourceBar(RlcdDisplay& display,
   UiDraw::progressBar(display, x, y + 14, w, 12, percent);
 }
 
+void drawDashedVLine(RlcdDisplay& display, int x, int y, int h) {
+  for (int yy = y; yy < y + h; yy += 6) {
+    display.drawFastVLine(x, yy, min(3, y + h - yy), true);
+  }
+}
+
+void drawDashedLine(RlcdDisplay& display, int x0, int y0, int x1, int y1) {
+  constexpr int kSegments = 18;
+  for (int i = 0; i < kSegments; i += 2) {
+    const int xa = x0 + (x1 - x0) * i / kSegments;
+    const int ya = y0 + (y1 - y0) * i / kSegments;
+    const int xb = x0 + (x1 - x0) * (i + 1) / kSegments;
+    const int yb = y0 + (y1 - y0) * (i + 1) / kSegments;
+    display.drawLine(xa, ya, xb, yb, true);
+  }
+}
+
+void drawBatteryHistoryChart(RlcdDisplay& display, const DesktopClockUiModel& model, int x, int y, int w, int h) {
+  char text[24];
+  display.drawRect(x, y, w, h, true);
+  display.drawFastHLine(x, y + h / 2, w, true);
+  display.drawText(x + 4, y + 4, "100", true, 1);
+  display.drawText(x + 7, y + h - 15, "0", true, 1);
+
+  if (!model.batteryChart || model.batteryChartCount == 0) {
+    display.drawText(x + 52, y + h / 2 - 8, model.sdMounted ? "No battery history" : "No SD history", true, 1);
+    return;
+  }
+
+  const int plotX = x + 24;
+  const int plotY = y + 8;
+  const int plotW = w - 32;
+  const int plotH = h - 24;
+  const uint16_t maxMinute = max<uint16_t>(1, max(model.batteryChartNowMinute, model.batteryChartPredictedZeroMinute));
+  auto px = [&](uint16_t minute) {
+    return plotX + static_cast<int>((static_cast<uint32_t>(minute) * plotW) / maxMinute);
+  };
+  auto py = [&](uint8_t percent) {
+    return plotY + plotH - static_cast<int>((static_cast<uint32_t>(percent) * plotH) / 100UL);
+  };
+
+  for (size_t i = 1; i < model.batteryChartCount; ++i) {
+    display.drawLine(px(model.batteryChart[i - 1].minute),
+                     py(model.batteryChart[i - 1].percent),
+                     px(model.batteryChart[i].minute),
+                     py(model.batteryChart[i].percent),
+                     true);
+  }
+
+  const BatteryChartPoint& latest = model.batteryChart[model.batteryChartCount - 1];
+  drawDashedVLine(display, px(model.batteryChartNowMinute), plotY, plotH);
+  if (model.batteryChartPredictedZeroMinute > model.batteryChartNowMinute) {
+    drawDashedLine(display, px(latest.minute), py(latest.percent), px(model.batteryChartPredictedZeroMinute), py(0));
+  }
+
+  snprintf(text, sizeof(text), "%uh", static_cast<unsigned>(model.batteryChartNowMinute / 60));
+  display.drawText(plotX, y + h - 13, text, true, 1);
+  if (model.batteryChartPredictedZeroMinute > model.batteryChartNowMinute) {
+    snprintf(text, sizeof(text), "0%% %uh", static_cast<unsigned>(model.batteryChartPredictedZeroMinute / 60));
+    display.drawText(x + w - 54, y + h - 13, text, true, 1);
+  }
+}
+
 void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClockUiModel& model) {
   char text[48];
 
@@ -567,11 +630,12 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   constexpr int detailY = 42;
   constexpr int rightX = 264;
   constexpr int detailW = 256;
-  const uint8_t selected = min(model.selectedSystemMenuItem, static_cast<uint8_t>(2));
+  const uint8_t selected = min(model.selectedSystemMenuItem, static_cast<uint8_t>(3));
 
   drawSystemMenuItem(display, menuX, menuY, menuW, "STATUS", selected == 0);
   drawSystemMenuItem(display, menuX, menuY + 40, menuW, "STORE", selected == 1);
-  drawSystemMenuItem(display, menuX, menuY + 80, menuW, "ACTION", selected == 2 && !model.systemActionFocused);
+  drawSystemMenuItem(display, menuX, menuY + 80, menuW, "BATTERY", selected == 2);
+  drawSystemMenuItem(display, menuX, menuY + 120, menuW, "ACTION", selected == 3 && !model.systemActionFocused);
 
   display.drawFastVLine(124, 40, 214, true);
 
@@ -596,12 +660,31 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     snprintf(text, sizeof(text), "TODO %u", static_cast<unsigned>(model.todoCount));
     display.drawText(rightX, detailY + 104, text, true, 2);
   } else if (selected == 2) {
+    drawBatteryHistoryChart(display, model, detailX, 44, detailW, 204);
+  } else if (selected == 3) {
     constexpr int rowX = detailX;
-    constexpr int rowY = detailY + 62;
+    constexpr int rowY = detailY + 58;
     constexpr int rowW = detailW;
-    constexpr int rowGap = 50;
-    const uint8_t action = min(model.selectedSystemAction, static_cast<uint8_t>(2));
+    constexpr int rowGap = 30;
+    const uint8_t action = min(model.selectedSystemAction, static_cast<uint8_t>(4));
+    const char* wifiLabel = !model.wifiConfigured ? "WIFI N/A" : (model.wifiDisabled ? "WIFI ON" : "WIFI OFF");
+    char wifiNote[24];
     char clearNote[24];
+    if (!model.wifiConfigured) {
+      snprintf(wifiNote, sizeof(wifiNote), "no credentials");
+    } else if (model.wifiAutoDisabled) {
+      snprintf(wifiNote, sizeof(wifiNote), "auto off fail %u/%u",
+               static_cast<unsigned>(model.wifiFailureCount),
+               static_cast<unsigned>(model.wifiMaxFailures));
+    } else if (model.wifiDisabled) {
+      snprintf(wifiNote, sizeof(wifiNote), "offline mode");
+    } else if (model.wifiConnected) {
+      snprintf(wifiNote, sizeof(wifiNote), "connected");
+    } else {
+      snprintf(wifiNote, sizeof(wifiNote), "retry fail %u/%u",
+               static_cast<unsigned>(model.wifiFailureCount),
+               static_cast<unsigned>(model.wifiMaxFailures));
+    }
     snprintf(clearNote, sizeof(clearNote), "%u cached messages", static_cast<unsigned>(model.messageCount));
 
     display.drawText(detailX, detailY, "ACTIONS", true, 2);
@@ -612,8 +695,8 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
                         rowY,
                         rowW,
                         "01",
-                        "SYNC NOW",
-                        model.wifiConnected ? "refresh network data" : "connect and refresh",
+                        wifiLabel,
+                        wifiNote,
                         model.systemActionFocused && action == 0,
                         model.systemActionFocused);
     drawSystemActionRow(display,
@@ -621,8 +704,8 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
                         rowY + rowGap,
                         rowW,
                         "02",
-                        "CLEAR MSG",
-                        clearNote,
+                        "SYNC NOW",
+                        model.wifiDisabled ? "offline refresh only" : "refresh network data",
                         model.systemActionFocused && action == 1,
                         model.systemActionFocused);
     drawSystemActionRow(display,
@@ -630,9 +713,27 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
                         rowY + rowGap * 2,
                         rowW,
                         "03",
+                        "CLEAR MSG",
+                        clearNote,
+                        model.systemActionFocused && action == 2,
+                        model.systemActionFocused);
+    drawSystemActionRow(display,
+                        rowX,
+                        rowY + rowGap * 3,
+                        rowW,
+                        "04",
+                        "RESET BAT",
+                        "new ETA window",
+                        model.systemActionFocused && action == 3,
+                        model.systemActionFocused);
+    drawSystemActionRow(display,
+                        rowX,
+                        rowY + rowGap * 4,
+                        rowW,
+                        "05",
                         "BACK",
                         "leave action mode",
-                        model.systemActionFocused && action == 2,
+                        model.systemActionFocused && action == 4,
                         model.systemActionFocused);
   } else {
     display.drawText(detailX, detailY, "BATTERY", true, 2);
@@ -657,7 +758,11 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     }
     display.drawText(detailX, detailY + 128, text, true, 1);
     display.drawText(rightX, detailY, "SYSTEM", true, 2);
-    snprintf(text, sizeof(text), "WIFI %s %d", model.wifiConnected ? "ON" : "OFF", model.wifiRssi);
+    snprintf(text,
+             sizeof(text),
+             "WIFI %s %d",
+             model.wifiDisabled ? "DIS" : (model.wifiConnected ? "ON" : "OFF"),
+             model.wifiRssi);
     display.drawText(rightX, detailY + 30, text, true, 1);
     drawClippedText(display, rightX, detailY + 48, model.wifiConnected ? model.wifiSsid : String("--"), 18, true, 1);
     snprintf(text, sizeof(text), "IP %s", model.wifiConnected ? model.wifiIp.c_str() : "--");
@@ -688,7 +793,7 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
   }
 
   display.drawText(24, 270, model.systemActionFocused ? "KEY BUTTON" : "KEY MENU", true, 1);
-  display.drawText(132, 270, selected == 2 ? (model.systemActionFocused ? "HOLD RUN" : "DBL FOCUS") : "DBL --", true, 1);
+  display.drawText(132, 270, selected == 3 ? (model.systemActionFocused ? "HOLD RUN" : "DBL FOCUS") : "DBL --", true, 1);
   display.drawText(286, 270, "BOOT NEXT", true, 1);
   drawPageDots(display, model.page);
 }

@@ -218,6 +218,8 @@ void setup() {
       storageLog("device_config", "using built-in");
     }
 
+    controller.restoreBatteryHistoryFromStorage();
+
     size_t curveCount = 0;
     if (appStorage.loadBatteryCurve(sdBatteryCurve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
         battery.setBatteryCurve(sdBatteryCurve, curveCount)) {

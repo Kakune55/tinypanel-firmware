@@ -1,6 +1,7 @@
 #include "AppStorage.h"
 
 #include <ArduinoJson.h>
+#include <dirent.h>
 #include <cstring>
 #include <esp_heap_caps.h>
 
@@ -62,6 +63,49 @@ uint8_t* allocMessageBuffer(size_t len) {
     buffer = static_cast<uint8_t*>(heap_caps_malloc(len, MALLOC_CAP_8BIT));
   }
   return buffer;
+}
+
+bool isLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+uint16_t daysBeforeMonth(int year, int month) {
+  static constexpr uint16_t kDays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+  if (month < 1 || month > 12) {
+    return 0;
+  }
+  return kDays[month - 1] + ((month > 2 && isLeapYear(year)) ? 1 : 0);
+}
+
+uint32_t absoluteMinuteFromTimestamp(const String& value) {
+  if (value.length() < 16 || value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':') {
+    return 0;
+  }
+
+  const int year = value.substring(0, 4).toInt();
+  const int month = value.substring(5, 7).toInt();
+  const int day = value.substring(8, 10).toInt();
+  const int hour = value.substring(11, 13).toInt();
+  const int minute = value.substring(14, 16).toInt();
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
+      minute < 0 || minute > 59) {
+    return 0;
+  }
+
+  uint32_t days = 0;
+  for (int y = 2000; y < year; ++y) {
+    days += isLeapYear(y) ? 366UL : 365UL;
+  }
+  days += daysBeforeMonth(year, month);
+  days += static_cast<uint32_t>(day - 1);
+  return days * 1440UL + static_cast<uint32_t>(hour * 60 + minute);
+}
+
+bool batteryLogName(const char* name) {
+  if (!name) {
+    return false;
+  }
+  return (strncmp(name, "battery_", 8) == 0 && strstr(name, ".csv") != nullptr);
 }
 
 }  // namespace
@@ -547,6 +591,49 @@ bool AppStorage::loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_
   return outCount >= 2;
 }
 
+bool AppStorage::loadBatteryHistory(StoredBatteryHistoryPoint* out, size_t maxCount, size_t& outCount) const {
+  outCount = 0;
+  if (!isReady() || !out || maxCount == 0) {
+    return false;
+  }
+
+  char names[16][40] = {};
+  size_t nameCount = 0;
+  const String logDir = String(sd_->mountPoint()) + LogsDir;
+  DIR* dir = opendir(logDir.c_str());
+  if (!dir) {
+    return false;
+  }
+
+  while (dirent* entry = readdir(dir)) {
+    if (!batteryLogName(entry->d_name) || nameCount >= sizeof(names) / sizeof(names[0])) {
+      continue;
+    }
+    snprintf(names[nameCount], sizeof(names[nameCount]), "%s", entry->d_name);
+    ++nameCount;
+  }
+  closedir(dir);
+
+  for (size_t i = 0; i < nameCount; ++i) {
+    for (size_t j = i + 1; j < nameCount; ++j) {
+      if (strcmp(names[j], names[i]) < 0) {
+        char temp[sizeof(names[0])];
+        snprintf(temp, sizeof(temp), "%s", names[i]);
+        snprintf(names[i], sizeof(names[i]), "%s", names[j]);
+        snprintf(names[j], sizeof(names[j]), "%s", temp);
+      }
+    }
+  }
+
+  for (size_t i = 0; i < nameCount; ++i) {
+    char path[72];
+    snprintf(path, sizeof(path), "%s/%s", LogsDir, names[i]);
+    loadBatteryHistoryFile(path, out, maxCount, outCount);
+  }
+
+  return outCount > 0;
+}
+
 bool AppStorage::appendBatterySample(const BatteryStatus& battery, const RtcDateTime& now, uint32_t uptimeS) {
   if (!isReady()) {
     return false;
@@ -657,4 +744,89 @@ bool AppStorage::parseBatteryCurveLine(const String& line, BatteryCurvePoint& ou
   out.rawAdc = rawText.toInt();
   out.percent = percentText.toFloat();
   return out.rawAdc > 0 && out.percent >= 0.0f && out.percent <= 100.0f;
+}
+
+bool AppStorage::parseBatteryHistoryLine(const String& line, StoredBatteryHistoryPoint& out) const {
+  if (line.length() == 0 || line.startsWith("timestamp")) {
+    return false;
+  }
+
+  int fields[7] = {-1, -1, -1, -1, -1, -1, -1};
+  int start = 0;
+  for (int i = 0; i < 7; ++i) {
+    fields[i] = start;
+    const int comma = line.indexOf(',', start);
+    if (comma < 0) {
+      if (i < 6) {
+        return false;
+      }
+      break;
+    }
+    start = comma + 1;
+  }
+
+  auto field = [&](int index) {
+    const int begin = fields[index];
+    if (begin < 0) {
+      return String();
+    }
+    const int comma = line.indexOf(',', begin);
+    String value = comma < 0 ? line.substring(begin) : line.substring(begin, comma);
+    value.trim();
+    return value;
+  };
+
+  const String timestamp = field(0);
+  const String uptime = field(1);
+  const String percent = field(5);
+  const String charging = field(6);
+  if (percent.length() == 0 || charging.length() == 0) {
+    return false;
+  }
+
+  out.absoluteMinute = absoluteMinuteFromTimestamp(timestamp);
+  if (out.absoluteMinute == 0 && uptime.length() > 0) {
+    out.absoluteMinute = uptime.toInt() / 60UL;
+  }
+  out.percent = percent.toFloat();
+  out.charging = charging.toInt() != 0;
+  return out.absoluteMinute > 0 && out.percent >= 0.0f && out.percent <= 100.0f;
+}
+
+bool AppStorage::loadBatteryHistoryFile(const char* path,
+                                        StoredBatteryHistoryPoint* out,
+                                        size_t maxCount,
+                                        size_t& outCount) const {
+  String text;
+  if (!sd_->readText(path, text, 64 * 1024)) {
+    return false;
+  }
+
+  int start = 0;
+  while (start < static_cast<int>(text.length())) {
+    int end = text.indexOf('\n', start);
+    if (end < 0) {
+      end = text.length();
+    }
+
+    String line = text.substring(start, end);
+    line.trim();
+    StoredBatteryHistoryPoint point;
+    if (parseBatteryHistoryLine(line, point)) {
+      if (point.charging) {
+        outCount = 0;
+      } else {
+        if (outCount >= maxCount) {
+          for (size_t i = 1; i < outCount; ++i) {
+            out[i - 1] = out[i];
+          }
+          --outCount;
+        }
+        out[outCount++] = point;
+      }
+    }
+    start = end + 1;
+  }
+
+  return true;
 }

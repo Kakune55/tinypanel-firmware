@@ -38,6 +38,9 @@ bool WifiManager::connect(uint32_t timeoutMs) {
     return true;
   }
 
+  WiFi.mode(WIFI_STA);
+  enableMaxModemSleep();
+
   size_t validCount = 0;
   for (size_t i = 0; i < credentialCount_; ++i) {
     if (credentialValid(i)) {
