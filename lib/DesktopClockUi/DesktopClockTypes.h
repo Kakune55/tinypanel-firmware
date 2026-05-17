@@ -17,6 +17,11 @@ enum class DesktopClockPage {
 
 constexpr int kDesktopClockPageCount = 5;
 
+struct BatteryChartPoint {
+  uint16_t minute = 0;
+  uint8_t percent = 0;
+};
+
 struct DesktopClockUiModel {
   DesktopClockPage page = DesktopClockPage::Clock;
   BatteryStatus battery;
@@ -41,6 +46,10 @@ struct DesktopClockUiModel {
   uint8_t selectedSystemAction = 0;
   bool systemActionFocused = false;
   bool wifiConnected = false;
+  bool wifiDisabled = false;
+  bool wifiAutoDisabled = false;
+  uint8_t wifiFailureCount = 0;
+  uint8_t wifiMaxFailures = 0;
   int wifiRssi = 0;
   String wifiIp;
   String wifiSsid;
@@ -51,6 +60,10 @@ struct DesktopClockUiModel {
   uint32_t psramSize = 0;
   uint32_t cpuMhz = 0;
   int batteryEtaMinutes = -1;
+  const BatteryChartPoint* batteryChart = nullptr;
+  size_t batteryChartCount = 0;
+  uint16_t batteryChartNowMinute = 0;
+  uint16_t batteryChartPredictedZeroMinute = 0;
   bool newMessageAlert = false;
   bool newMessageAlertInvert = false;
   HubWeather weather;

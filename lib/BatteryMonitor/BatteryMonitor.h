@@ -38,6 +38,8 @@ private:
   mutable int lastRawAdc_ = 0;
   mutable int risingSamples_ = 0;
   mutable int fallingSamples_ = 0;
+  mutable int riseAnchorRawAdc_ = 0;
+  mutable int fallAnchorRawAdc_ = 0;
   mutable bool charging_ = false;
   BatteryCurvePoint externalCurve_[MaxExternalCurvePoints];
   size_t externalCurveCount_ = 0;

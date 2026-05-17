@@ -226,6 +226,7 @@ void setup() {
       }
       storageLog("hub_credentials", "loaded from sd");
     }
+    controller.restoreBatteryHistoryFromStorage();
 
     size_t curveCount = 0;
     if (appStorage.loadBatteryCurve(sdBatteryCurve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&

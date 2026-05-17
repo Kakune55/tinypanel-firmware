@@ -13,17 +13,21 @@ AppController* activeController = nullptr;
 constexpr uint32_t kLightSleepMinMs = 20;
 constexpr uint32_t kLightSleepMaxMs = 120;
 constexpr uint8_t kSystemMenuStorage = 1;
-constexpr uint8_t kSystemMenuAction = 2;
-constexpr uint8_t kSystemMenuItemCount = 3;
-constexpr uint8_t kSystemActionSyncNow = 0;
-constexpr uint8_t kSystemActionClearMessages = 1;
-constexpr uint8_t kSystemActionBack = 2;
-constexpr uint8_t kSystemActionCount = 3;
+constexpr uint8_t kSystemMenuBattery = 2;
+constexpr uint8_t kSystemMenuAction = 3;
+constexpr uint8_t kSystemMenuItemCount = 4;
+constexpr uint8_t kSystemActionWifiToggle = 0;
+constexpr uint8_t kSystemActionSyncNow = 1;
+constexpr uint8_t kSystemActionClearMessages = 2;
+constexpr uint8_t kSystemActionResetBattery = 3;
+constexpr uint8_t kSystemActionBack = 4;
+constexpr uint8_t kSystemActionCount = 5;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
 constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
 constexpr float kTemperatureDirtyDelta = 0.1f;
 constexpr float kHumidityDirtyDelta = 0.5f;
+constexpr float kBatteryFullHoldPercent = 99.5f;
 
 bool batteryDisplayChanged(const BatteryStatus& before, const BatteryStatus& after) {
   return before.percent != after.percent ||
@@ -43,6 +47,36 @@ bool environmentDisplayChanged(const Shtc3Reading& before, const Shtc3Reading& a
   }
   return std::fabs(before.temperatureC - after.temperatureC) >= kTemperatureDirtyDelta ||
          std::fabs(before.humidityRh - after.humidityRh) >= kHumidityDirtyDelta;
+}
+
+bool batteryInFullHold(const BatteryStatus& battery) {
+  return battery.charging || battery.percentFloat >= kBatteryFullHoldPercent;
+}
+
+bool leapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+uint16_t daysBeforeMonth(int year, int month) {
+  static constexpr uint16_t kDays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+  if (month < 1 || month > 12) {
+    return 0;
+  }
+  return kDays[month - 1] + ((month > 2 && leapYear(year)) ? 1 : 0);
+}
+
+uint32_t absoluteMinute(const RtcDateTime& dt, uint32_t fallbackUptimeMs) {
+  if (!dt.valid || dt.year < 2000) {
+    return fallbackUptimeMs / 60000UL;
+  }
+
+  uint32_t days = 0;
+  for (int year = 2000; year < dt.year; ++year) {
+    days += leapYear(year) ? 366UL : 365UL;
+  }
+  days += daysBeforeMonth(dt.year, dt.month);
+  days += static_cast<uint32_t>(dt.day > 0 ? dt.day - 1 : 0);
+  return days * 1440UL + static_cast<uint32_t>(dt.hour) * 60UL + dt.minute;
 }
 
 }  // namespace
@@ -130,7 +164,10 @@ void AppController::readSensors(bool force) {
       (force || state_.lastBatteryLogMs == 0 || nowMs - state_.lastBatteryLogMs >= config_.batteryLogIntervalMs)) {
     if (storage_.appendBatterySample(state_.battery, state_.now, nowMs / 1000UL)) {
       state_.lastBatteryLogMs = nowMs;
+      appendBatteryChartSample(state_.battery);
     }
+  } else if (!storage_.isReady()) {
+    appendBatteryChartSample(state_.battery);
   }
 
   if (force ||
@@ -267,6 +304,39 @@ void AppController::runInitialHubSyncNow() {
   markUiDirty();
 }
 
+void AppController::restoreBatteryHistoryFromStorage() {
+  if (!verifySdMounted() || !storage_.isReady()) {
+    return;
+  }
+
+  StoredBatteryHistoryPoint points[AppStorage::MaxBatteryHistoryPoints];
+  size_t count = 0;
+  if (!storage_.loadBatteryHistory(points, AppStorage::MaxBatteryHistoryPoints, count) || count == 0) {
+    return;
+  }
+
+  state_.batteryChartCount = 0;
+  state_.batteryChartStartMinute = points[0].absoluteMinute;
+  state_.batteryChartLastAbsoluteMinute = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (points[i].charging || points[i].absoluteMinute < state_.batteryChartStartMinute) {
+      continue;
+    }
+    const uint32_t elapsed = points[i].absoluteMinute - state_.batteryChartStartMinute;
+    if (elapsed > UINT16_MAX) {
+      continue;
+    }
+    const size_t index = state_.batteryChartCount++;
+    state_.batteryChart[index].minute = static_cast<uint16_t>(elapsed);
+    state_.batteryChart[index].percent = static_cast<uint8_t>(constrain(static_cast<int>(points[i].percent + 0.5f), 0, 100));
+    state_.batteryChartLastAbsoluteMinute = points[i].absoluteMinute;
+    if (state_.batteryChartCount >= State::BatteryChartSize) {
+      break;
+    }
+  }
+  markUiDirty();
+}
+
 void AppController::loopOnce() {
   if (state_.lastActivityMs == 0) {
     state_.lastActivityMs = millis();
@@ -375,6 +445,10 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.selectedSystemAction = state_.selectedSystemAction;
   model.systemActionFocused = state_.systemActionFocused;
   model.wifiConnected = wifi_.isConnected();
+  model.wifiDisabled = state_.wifiDisabled;
+  model.wifiAutoDisabled = state_.wifiAutoDisabled;
+  model.wifiFailureCount = state_.wifiFailureCount;
+  model.wifiMaxFailures = config_.wifiMaxFailures;
   model.wifiRssi = wifi_.rssi();
   model.wifiIp = wifi_.isConnected() ? wifi_.ipAddress() : "";
   model.wifiSsid = wifi_.ssid();
@@ -385,6 +459,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.psramSize = ESP.getPsramSize();
   model.cpuMhz = getCpuFrequencyMhz();
   model.batteryEtaMinutes = state_.batteryEtaMinutes;
+  rebuildBatteryChartPrediction(model);
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
       state_.newMessageAlert && ((millis() / config_.newMessageBlinkMs) % 2 == 1);
@@ -410,11 +485,23 @@ void AppController::renderHubState() {
 
 void AppController::handleWifi() {
   const uint32_t now = millis();
-  if (!config_.wifiConfigured || wifi_.isConnected() || now - state_.lastWifiRetryMs < config_.wifiRetryMs) {
+  if (!config_.wifiConfigured || state_.wifiDisabled || wifi_.isConnected() ||
+      now - state_.lastWifiRetryMs < config_.wifiRetryMs) {
     return;
   }
 
-  wifi_.connect(5000);
+  if (wifi_.connect(5000)) {
+    state_.wifiFailureCount = 0;
+    state_.wifiAutoDisabled = false;
+  } else if (state_.wifiFailureCount < 255) {
+    ++state_.wifiFailureCount;
+    if (config_.wifiMaxFailures > 0 && state_.wifiFailureCount >= config_.wifiMaxFailures) {
+      state_.wifiDisabled = true;
+      state_.wifiAutoDisabled = true;
+      wifi_.disconnect(true);
+      Serial.println("WiFi: auto disabled after repeated failures");
+    }
+  }
   state_.lastWifiRetryMs = now;
   markUiDirty();
 }
@@ -608,8 +695,19 @@ void AppController::handleForcedRefresh() {
     sdCard_.printInfo(Serial);
   }
   refreshSdStats(true);
-  if (!wifi_.isConnected() && config_.wifiConfigured) {
-    wifi_.connect(8000);
+  if (!wifi_.isConnected() && config_.wifiConfigured && !state_.wifiDisabled) {
+    if (wifi_.connect(8000)) {
+      state_.wifiFailureCount = 0;
+      state_.wifiAutoDisabled = false;
+    } else if (state_.wifiFailureCount < 255) {
+      ++state_.wifiFailureCount;
+      if (config_.wifiMaxFailures > 0 && state_.wifiFailureCount >= config_.wifiMaxFailures) {
+        state_.wifiDisabled = true;
+        state_.wifiAutoDisabled = true;
+        wifi_.disconnect(true);
+        Serial.println("WiFi: auto disabled after repeated failures");
+      }
+    }
   }
   queueScheduledTasks(true, true);
 }
@@ -637,14 +735,14 @@ void AppController::updateBatteryRuntimeEstimate() {
   constexpr size_t kMinSamples = 8;
   constexpr float kMinEstimatedDropPercent = 1.0f;
 
-  if (state_.battery.charging || state_.battery.percentFloat <= 0.0f) {
+  if (batteryInFullHold(state_.battery) || state_.battery.percentFloat <= 0.0f) {
     state_.batteryHistoryCount = 0;
     state_.batteryHistoryNext = 0;
     state_.hasBatteryEtaFilter = false;
     state_.hasBatteryEtaEstimate = false;
     state_.lastBatteryEtaSampleS = 0;
     state_.batteryEtaMinutes = -1;
-    state_.batteryEtaWasCharging = state_.battery.charging;
+    state_.batteryEtaWasCharging = batteryInFullHold(state_.battery);
     return;
   }
 
@@ -751,6 +849,93 @@ void AppController::updateBatteryRuntimeEstimate() {
       state_.batteryEtaMinutes = static_cast<int>(etaMinutes + 0.5f);
       state_.hasBatteryEtaEstimate = true;
     }
+  }
+}
+
+void AppController::appendBatteryChartSample(const BatteryStatus& battery) {
+  const uint32_t nowMinute = absoluteMinute(state_.now, millis());
+  const uint32_t minIntervalMinutes = max<uint32_t>(1, config_.batteryLogIntervalMs / 60000UL);
+
+  if (batteryInFullHold(battery)) {
+    state_.batteryChartCount = 0;
+    state_.batteryChartStartMinute = 0;
+    state_.batteryChartLastAbsoluteMinute = nowMinute;
+    markUiDirty();
+    return;
+  }
+
+  if (state_.batteryChartCount > 0 &&
+      nowMinute - state_.batteryChartLastAbsoluteMinute < minIntervalMinutes) {
+    return;
+  }
+
+  if (state_.batteryChartStartMinute == 0 || nowMinute < state_.batteryChartStartMinute) {
+    state_.batteryChartStartMinute = nowMinute;
+    state_.batteryChartCount = 0;
+  }
+
+  const uint32_t elapsed = nowMinute - state_.batteryChartStartMinute;
+  if (elapsed > UINT16_MAX) {
+    return;
+  }
+
+  if (state_.batteryChartCount >= State::BatteryChartSize) {
+    const uint32_t removedMinutes = state_.batteryChart[1].minute;
+    for (size_t i = 1; i < state_.batteryChartCount; ++i) {
+      state_.batteryChart[i - 1] = state_.batteryChart[i];
+      state_.batteryChart[i - 1].minute -= removedMinutes;
+    }
+    state_.batteryChartStartMinute += removedMinutes;
+    --state_.batteryChartCount;
+  }
+
+  const size_t index = state_.batteryChartCount++;
+  state_.batteryChart[index].minute = static_cast<uint16_t>(elapsed);
+  state_.batteryChart[index].percent = static_cast<uint8_t>(constrain(static_cast<int>(battery.percentFloat + 0.5f), 0, 100));
+  state_.batteryChartLastAbsoluteMinute = nowMinute;
+  markUiDirty();
+}
+
+void AppController::resetBatteryWindow() {
+  state_.batteryHistoryCount = 0;
+  state_.batteryHistoryNext = 0;
+  state_.hasBatteryEtaFilter = false;
+  state_.hasBatteryEtaEstimate = false;
+  state_.batteryEtaWasCharging = state_.battery.charging;
+  state_.batteryEtaFilteredPercent = 0.0f;
+  state_.lastBatteryEtaSampleS = 0;
+  state_.batteryEtaMinutes = -1;
+  state_.batteryChartCount = 0;
+  state_.batteryChartStartMinute = 0;
+  state_.batteryChartLastAbsoluteMinute = 0;
+
+  if (verifySdMounted() && storage_.isReady()) {
+    BatteryStatus resetMarker = state_.battery;
+    resetMarker.charging = true;
+    const uint32_t uptimeS = millis() / 1000UL;
+    storage_.appendBatterySample(resetMarker, state_.now, uptimeS);
+    if (storage_.appendBatterySample(state_.battery, state_.now, uptimeS)) {
+      state_.lastBatteryLogMs = millis();
+    }
+  }
+
+  appendBatteryChartSample(state_.battery);
+  markUiDirty();
+}
+
+void AppController::rebuildBatteryChartPrediction(DesktopClockUiModel& model) const {
+  if (state_.batteryChartCount == 0) {
+    return;
+  }
+
+  model.batteryChart = state_.batteryChart;
+  model.batteryChartCount = state_.batteryChartCount;
+  model.batteryChartNowMinute = state_.batteryChart[state_.batteryChartCount - 1].minute;
+  model.batteryChartPredictedZeroMinute = model.batteryChartNowMinute;
+  if (state_.batteryEtaMinutes > 0) {
+    const uint32_t predicted = static_cast<uint32_t>(model.batteryChartNowMinute) +
+                               static_cast<uint32_t>(state_.batteryEtaMinutes);
+    model.batteryChartPredictedZeroMinute = static_cast<uint16_t>(min<uint32_t>(UINT16_MAX, predicted));
   }
 }
 
@@ -950,6 +1135,39 @@ void AppController::handleSystemClearMessages() {
   Serial.println("KEY: clear messages");
 }
 
+void AppController::handleSystemWifiToggle() {
+  if (!config_.wifiConfigured) {
+    Serial.println("KEY: wifi not configured");
+    return;
+  }
+
+  if (!state_.wifiDisabled || wifi_.isConnected()) {
+    wifi_.disconnect(true);
+    state_.wifiDisabled = true;
+    state_.wifiAutoDisabled = false;
+    markUiDirty();
+    Serial.println("KEY: wifi off");
+    return;
+  }
+
+  state_.wifiDisabled = false;
+  state_.wifiAutoDisabled = false;
+  state_.wifiFailureCount = 0;
+  state_.lastWifiRetryMs = 0;
+  if (wifi_.connect(8000)) {
+    Serial.println("KEY: wifi on");
+  } else {
+    state_.wifiFailureCount = 1;
+    Serial.println("KEY: wifi on failed");
+  }
+  markUiDirty();
+}
+
+void AppController::handleSystemResetBattery() {
+  resetBatteryWindow();
+  Serial.println("KEY: reset battery window");
+}
+
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
@@ -1041,6 +1259,11 @@ void AppController::handleButtons() {
       }
       if (state_.page == DesktopClockPage::System && state_.selectedSystemMenuItem == kSystemMenuAction &&
           state_.systemActionFocused) {
+        if (state_.selectedSystemAction == kSystemActionWifiToggle) {
+          Serial.println("KEY: wifi toggle");
+          handleSystemWifiToggle();
+          return;
+        }
         if (state_.selectedSystemAction == kSystemActionSyncNow) {
           Serial.println("KEY: system refresh");
           handleForcedRefresh();
@@ -1050,6 +1273,11 @@ void AppController::handleButtons() {
         if (state_.selectedSystemAction == kSystemActionClearMessages) {
           Serial.println("KEY: clear messages");
           handleSystemClearMessages();
+          return;
+        }
+        if (state_.selectedSystemAction == kSystemActionResetBattery) {
+          Serial.println("KEY: reset battery");
+          handleSystemResetBattery();
           return;
         }
         if (state_.selectedSystemAction == kSystemActionBack) {
