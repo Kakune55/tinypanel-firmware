@@ -126,7 +126,7 @@ void AppController::readSensors(bool force) {
   updateBatteryRuntimeEstimate();
 
   const uint32_t nowMs = millis();
-  if (storage_.isReady() &&
+  if (verifySdMounted() && storage_.isReady() &&
       (force || state_.lastBatteryLogMs == 0 || nowMs - state_.lastBatteryLogMs >= config_.batteryLogIntervalMs)) {
     if (storage_.appendBatterySample(state_.battery, state_.now, nowMs / 1000UL)) {
       state_.lastBatteryLogMs = nowMs;
@@ -218,7 +218,9 @@ void AppController::pollHubMessages(bool force) {
   if (hub_.messageCount() != before) {
     state_.selectedMessage = 0;
     state_.messageBodyScrollLine = 0;
-    storage_.saveMessages(hub_.messages(), hub_.messageCount());
+    if (verifySdMounted()) {
+      storage_.saveMessages(hub_.messages(), hub_.messageCount());
+    }
     if (state_.page != DesktopClockPage::Message) {
       state_.pendingNewMessageAlert = true;
     }
@@ -230,7 +232,9 @@ void AppController::pollWeather(bool force) {
   const HubRequestResult result = hub_.pollWeather(force, wifi_.isConnected(), handleHubStateChanged);
   if (result.attempted) {
     if (result.ok) {
-      storage_.saveWeather(hub_.weather());
+      if (verifySdMounted()) {
+        storage_.saveWeather(hub_.weather());
+      }
     }
     markUiDirty();
   }
@@ -240,7 +244,9 @@ void AppController::pollTodos(bool force) {
   const HubRequestResult result = hub_.pollTodos(force, wifi_.isConnected(), handleHubStateChanged);
   if (result.attempted) {
     if (result.ok) {
-      storage_.saveTodos(hub_.todos(), hub_.todoCount());
+      if (verifySdMounted()) {
+        storage_.saveTodos(hub_.todos(), hub_.todoCount());
+      }
     }
     updateSelectedTodoAfterChange();
     markUiDirty();
@@ -558,6 +564,22 @@ void AppController::publishPendingNewMessageAlert() {
   markUiDirty();
 }
 
+bool AppController::verifySdMounted() {
+  if (!sdCard_.isMounted()) {
+    return false;
+  }
+  if (sdCard_.verifyMounted()) {
+    return true;
+  }
+
+  state_.sdMounted = false;
+  state_.sdCardTotalMb = 0;
+  state_.sdCardUsedMb = 0;
+  markUiDirty();
+  Serial.println("SD: card removed");
+  return false;
+}
+
 void AppController::refreshSdStats(bool force) {
   const uint32_t now = millis();
   if (!force && now - state_.lastSdStatsMs < config_.sdStatsRefreshMs) {
@@ -565,9 +587,10 @@ void AppController::refreshSdStats(bool force) {
   }
 
   state_.lastSdStatsMs = now;
-  if (!sdCard_.isMounted()) {
+  if (!verifySdMounted()) {
     state_.sdCardTotalMb = 0;
     state_.sdCardUsedMb = 0;
+    markUiDirty();
     return;
   }
 
@@ -797,7 +820,9 @@ void AppController::handleMessageDelete() {
     return;
   }
 
-  storage_.saveMessages(hub_.messages(), hub_.messageCount());
+  if (verifySdMounted()) {
+    storage_.saveMessages(hub_.messages(), hub_.messageCount());
+  }
   const size_t nextCount = hub_.messageCount();
   if (nextCount == 0) {
     state_.selectedMessage = 0;
@@ -914,7 +939,9 @@ void AppController::handleSystemClearMessages() {
   }
 
   hub_.clearMessagesLocal();
-  storage_.saveMessages(hub_.messages(), hub_.messageCount());
+  if (verifySdMounted()) {
+    storage_.saveMessages(hub_.messages(), hub_.messageCount());
+  }
   state_.selectedMessage = 0;
   state_.messageBodyScrollLine = 0;
   state_.newMessageAlert = false;

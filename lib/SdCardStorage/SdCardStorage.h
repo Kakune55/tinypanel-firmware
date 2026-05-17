@@ -16,6 +16,7 @@ class SdCardStorage {
   void end();
 
   bool isMounted() const;
+  bool verifyMounted();
   const char* mountPoint() const;
   const char* lastErrorText() const;
   uint64_t cardSizeBytes() const;

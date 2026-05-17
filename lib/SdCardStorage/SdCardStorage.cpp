@@ -59,6 +59,24 @@ bool SdCardStorage::isMounted() const {
   return mounted_;
 }
 
+bool SdCardStorage::verifyMounted() {
+  if (!mounted_) {
+    return false;
+  }
+
+  const esp_err_t err = sdmmc_get_status(card_);
+  if (err == ESP_OK) {
+    return true;
+  }
+
+  esp_vfs_fat_sdcard_unmount(mountPoint_, card_);
+  card_ = nullptr;
+  mounted_ = false;
+  cardSizeBytes_ = 0;
+  setErrorText("card removed");
+  return false;
+}
+
 const char* SdCardStorage::mountPoint() const {
   return mountPoint_;
 }

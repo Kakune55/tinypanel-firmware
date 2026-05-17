@@ -507,14 +507,30 @@ void drawSystemMenuItem(RlcdDisplay& display, int x, int y, int w, const char* l
   display.drawText(x + 6, y + 7, label, !active, 2);
 }
 
-void drawSystemActionButton(RlcdDisplay& display, int x, int y, int w, const char* label, bool active) {
-  constexpr int h = 38;
+void drawSystemActionRow(RlcdDisplay& display,
+                         int x,
+                         int y,
+                         int w,
+                         const char* number,
+                         const char* label,
+                         const char* note,
+                         bool active,
+                         bool focused) {
+  constexpr int h = 42;
   if (active) {
     display.fillRect(x, y, w, h, true);
-  } else {
+  } else if (focused) {
     display.drawRect(x, y, w, h, true);
+  } else {
+    display.drawFastHLine(x, y + h - 1, w, true);
   }
-  display.drawText(x + 12, y + 12, label, !active, 2);
+
+  display.drawText(x + 8, y + 8, number, !active, 2);
+  display.drawText(x + 40, y + 7, label, !active, 2);
+  display.drawText(x + 42, y + 27, note, !active, 1);
+  if (active) {
+    display.drawText(x + w - 28, y + 12, ">", false, 2);
+  }
 }
 
 void drawResourceBar(RlcdDisplay& display,
@@ -580,33 +596,44 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     snprintf(text, sizeof(text), "TODO %u", static_cast<unsigned>(model.todoCount));
     display.drawText(rightX, detailY + 104, text, true, 2);
   } else if (selected == 2) {
-    constexpr int buttonGap = 12;
-    constexpr int buttonW = (detailW - buttonGap) / 2;
-    constexpr int buttonY = 62;
-    constexpr int rowGap = 46;
-    const int leftButtonX = detailX;
-    const int rightButtonX = detailX + buttonW + buttonGap;
+    constexpr int rowX = detailX;
+    constexpr int rowY = detailY + 62;
+    constexpr int rowW = detailW;
+    constexpr int rowGap = 50;
+    const uint8_t action = min(model.selectedSystemAction, static_cast<uint8_t>(2));
+    char clearNote[24];
+    snprintf(clearNote, sizeof(clearNote), "%u cached messages", static_cast<unsigned>(model.messageCount));
 
-    display.drawText(detailX, detailY, "ACTION", true, 2);
-    display.drawText(detailX, detailY + 32, model.systemActionFocused ? "KEY MOVE  HOLD RUN" : "DBL FOCUS BUTTONS", true, 1);
-    drawSystemActionButton(display,
-                           leftButtonX,
-                           detailY + buttonY,
-                           buttonW,
-                           "SYNC NOW",
-                           model.systemActionFocused && model.selectedSystemAction == 0);
-    drawSystemActionButton(display,
-                           rightButtonX,
-                           detailY + buttonY,
-                           buttonW,
-                           "CLEAR MSG",
-                           model.systemActionFocused && model.selectedSystemAction == 1);
-    drawSystemActionButton(display,
-                           leftButtonX,
-                           detailY + buttonY + rowGap,
-                           buttonW,
-                           "BACK",
-                           model.systemActionFocused && model.selectedSystemAction == 2);
+    display.drawText(detailX, detailY, "ACTIONS", true, 2);
+    display.drawText(detailX, detailY + 26, model.systemActionFocused ? "KEY SELECT   HOLD RUN" : "DBL ENTER COMMANDS", true, 1);
+    display.drawFastHLine(detailX, detailY + 50, detailW, true);
+    drawSystemActionRow(display,
+                        rowX,
+                        rowY,
+                        rowW,
+                        "01",
+                        "SYNC NOW",
+                        model.wifiConnected ? "refresh network data" : "connect and refresh",
+                        model.systemActionFocused && action == 0,
+                        model.systemActionFocused);
+    drawSystemActionRow(display,
+                        rowX,
+                        rowY + rowGap,
+                        rowW,
+                        "02",
+                        "CLEAR MSG",
+                        clearNote,
+                        model.systemActionFocused && action == 1,
+                        model.systemActionFocused);
+    drawSystemActionRow(display,
+                        rowX,
+                        rowY + rowGap * 2,
+                        rowW,
+                        "03",
+                        "BACK",
+                        "leave action mode",
+                        model.systemActionFocused && action == 2,
+                        model.systemActionFocused);
   } else {
     display.drawText(detailX, detailY, "BATTERY", true, 2);
     snprintf(text, sizeof(text), "%.2f%%", model.battery.percentFloat);

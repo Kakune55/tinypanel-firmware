@@ -167,6 +167,7 @@ class AppController {
   bool runNextScheduledTask();
   void queueScheduledTasks(bool force, bool includeTelemetry);
   void publishPendingNewMessageAlert();
+  bool verifySdMounted();
   void refreshSdStats(bool force = false);
   void handleForcedRefresh();
   void updateSelectedTodoAfterChange();
