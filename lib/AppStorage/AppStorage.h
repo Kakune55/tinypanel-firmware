@@ -29,11 +29,11 @@ struct StoredDeviceConfig {
   char messageChannel[MaxMessageChannelLength + 1] = "desk";
   uint32_t hubTelemetryMs = 5UL * 60UL * 1000UL;
   uint32_t hubMessagePollMs = 60UL * 1000UL;
-  uint32_t hubWeatherPollMs = 10UL * 60UL * 1000UL;
+  uint32_t hubWeatherPollMs = 30UL * 60UL * 1000UL;
   uint32_t hubTodoPollMs = 60UL * 1000UL;
   uint8_t hubMessageLimit = 10;
   uint8_t hubTodoLimit = 12;
-  uint32_t batteryLogIntervalMs = 5UL * 60UL * 1000UL;
+  uint32_t batteryLogIntervalMs = 15UL * 60UL * 1000UL;
   bool loaded = false;
 };
 

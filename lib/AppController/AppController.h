@@ -27,14 +27,14 @@ struct AppControllerConfig {
   uint32_t keyDoubleClickMs = 350;
   uint32_t keyLongPressMs = 1000;
   uint32_t newMessageBlinkMs = 500;
-  uint32_t batteryLogIntervalMs = 5UL * 60UL * 1000UL;
+  uint32_t batteryLogIntervalMs = 15UL * 60UL * 1000UL;
   uint32_t sdStatsRefreshMs = 30000;
   uint32_t loopDelayMs = 10;
   bool enableLightSleep = false;
   bool enableDynamicCpuFrequency = true;
   uint8_t activeCpuMhz = 240;
   uint8_t idleCpuMhz = 80;
-  uint32_t cpuIdleAfterMs = 5000;
+  uint32_t cpuIdleAfterMs = 2000;
 };
 
 class AppController {

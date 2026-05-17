@@ -610,7 +610,6 @@ void AppController::updateBatteryRuntimeEstimate() {
   constexpr float kMinSlopePercentPerHour = 0.25f;
   constexpr float kMaxSlopePercentPerHour = 30.0f;
   constexpr uint32_t kMinBootAgeS = 20UL * 60UL;
-  constexpr uint32_t kMinSampleIntervalS = 4UL * 60UL;
   constexpr uint32_t kMinElapsedS = 35UL * 60UL;
   constexpr size_t kMinSamples = 8;
   constexpr float kMinEstimatedDropPercent = 1.0f;
@@ -662,7 +661,8 @@ void AppController::updateBatteryRuntimeEstimate() {
   }
   state_.batteryEtaFilteredPercent = filteredPercent;
 
-  if (state_.lastBatteryEtaSampleS != 0 && nowS - state_.lastBatteryEtaSampleS < kMinSampleIntervalS) {
+  const uint32_t minSampleIntervalS = max<uint32_t>(1, config_.batteryLogIntervalMs / 1000UL);
+  if (state_.lastBatteryEtaSampleS != 0 && nowS - state_.lastBatteryEtaSampleS < minSampleIntervalS) {
     return;
   }
   state_.lastBatteryEtaSampleS = nowS;
