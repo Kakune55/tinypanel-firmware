@@ -177,6 +177,7 @@ class AppController {
   void handleSystemClearMessages();
   void handleSystemWifiToggle();
   void handleSystemResetBattery();
+  void handleSystemRePair();
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();

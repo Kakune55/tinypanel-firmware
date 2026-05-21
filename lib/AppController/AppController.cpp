@@ -20,8 +20,9 @@ constexpr uint8_t kSystemActionWifiToggle = 0;
 constexpr uint8_t kSystemActionSyncNow = 1;
 constexpr uint8_t kSystemActionClearMessages = 2;
 constexpr uint8_t kSystemActionResetBattery = 3;
-constexpr uint8_t kSystemActionBack = 4;
-constexpr uint8_t kSystemActionCount = 5;
+constexpr uint8_t kSystemActionRePair = 4;
+constexpr uint8_t kSystemActionBack = 5;
+constexpr uint8_t kSystemActionCount = 6;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
 constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
@@ -961,6 +962,36 @@ void AppController::handleSystemResetBattery() {
   Serial.println("KEY: reset battery window");
 }
 
+void AppController::handleSystemRePair() {
+  hub_.setDeviceSecret("");
+  hub_.setDeviceBinding(false, "", "");
+
+  if (storage_.isReady()) {
+    StoredHubCredentials cleared;
+    storage_.saveHubCredentials(cleared);
+  }
+
+  markUiDirty();
+  if (!wifi_.isConnected()) {
+    Serial.println("KEY: re-pair pending (wifi offline)");
+    return;
+  }
+
+  HubHelloResult hello = hub_.hello(true, handleHubStateChanged);
+  if (hello.attempted && hello.ok) {
+    StoredHubCredentials updated;
+    updated.bound = hello.bound;
+    snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", hello.deviceSecret.c_str());
+    snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", hello.bindCode.c_str());
+    snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", hello.name.c_str());
+    if (storage_.isReady()) {
+      storage_.saveHubCredentials(updated);
+    }
+  }
+
+  markUiDirty();
+}
+
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
@@ -1071,6 +1102,11 @@ void AppController::handleButtons() {
         if (state_.selectedSystemAction == kSystemActionResetBattery) {
           Serial.println("KEY: reset battery");
           handleSystemResetBattery();
+          return;
+        }
+        if (state_.selectedSystemAction == kSystemActionRePair) {
+          Serial.println("KEY: re-pair");
+          handleSystemRePair();
           return;
         }
         if (state_.selectedSystemAction == kSystemActionBack) {
