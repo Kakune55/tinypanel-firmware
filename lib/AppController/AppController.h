@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "BatteryRuntimeEstimator.h"
 #include "BatteryMonitor.h"
 #include "AppStorage.h"
 #include "Button.h"
@@ -96,13 +97,6 @@ class AppController {
       Telemetry,
     };
 
-    struct BatteryHistoryPoint {
-      uint32_t uptimeS = 0;
-      float percent = 0.0f;
-    };
-
-    static constexpr size_t BatteryChartSize = AppStorage::MaxBatteryHistoryPoints;
-
     BatteryStatus battery;
     Shtc3Reading environment;
     RtcDateTime now;
@@ -147,20 +141,6 @@ class AppController {
     bool scheduledTaskForce = false;
     bool scheduledTaskIncludeTelemetry = false;
     bool scheduledTaskTodoSyncOk = true;
-    static constexpr size_t BatteryHistorySize = 180;
-    BatteryHistoryPoint batteryHistory[BatteryHistorySize];
-    size_t batteryHistoryCount = 0;
-    size_t batteryHistoryNext = 0;
-    int batteryEtaMinutes = -1;
-    bool hasBatteryEtaEstimate = false;
-    bool hasBatteryEtaFilter = false;
-    bool batteryEtaWasCharging = false;
-    float batteryEtaFilteredPercent = 0.0f;
-    uint32_t lastBatteryEtaSampleS = 0;
-    BatteryChartPoint batteryChart[BatteryChartSize];
-    size_t batteryChartCount = 0;
-    uint32_t batteryChartStartMinute = 0;
-    uint32_t batteryChartLastAbsoluteMinute = 0;
     uint32_t lastActivityMs = 0;
     uint8_t currentCpuMhz = 0;
   };
@@ -182,10 +162,8 @@ class AppController {
   void refreshSdStats(bool force = false);
   void handleForcedRefresh();
   void updateSelectedTodoAfterChange();
-  void updateBatteryRuntimeEstimate();
   void appendBatteryChartSample(const BatteryStatus& battery);
   void resetBatteryWindow();
-  void rebuildBatteryChartPrediction(DesktopClockUiModel& model) const;
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;
   void handleMessageKeyClick();
@@ -225,6 +203,7 @@ class AppController {
   TimeSync& timeSync_;
   WifiManager& wifi_;
   DesktopClockUi& ui_;
+  BatteryRuntimeEstimator batteryRuntime_;
   bool bootScreenActive_ = false;
   State state_;
 };

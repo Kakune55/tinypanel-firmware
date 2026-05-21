@@ -27,7 +27,6 @@ constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
 constexpr float kTemperatureDirtyDelta = 0.1f;
 constexpr float kHumidityDirtyDelta = 0.5f;
-constexpr float kBatteryFullHoldPercent = 99.5f;
 
 bool batteryDisplayChanged(const BatteryStatus& before, const BatteryStatus& after) {
   return before.percent != after.percent ||
@@ -47,36 +46,6 @@ bool environmentDisplayChanged(const Shtc3Reading& before, const Shtc3Reading& a
   }
   return std::fabs(before.temperatureC - after.temperatureC) >= kTemperatureDirtyDelta ||
          std::fabs(before.humidityRh - after.humidityRh) >= kHumidityDirtyDelta;
-}
-
-bool batteryInFullHold(const BatteryStatus& battery) {
-  return battery.charging || battery.percentFloat >= kBatteryFullHoldPercent;
-}
-
-bool leapYear(int year) {
-  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-}
-
-uint16_t daysBeforeMonth(int year, int month) {
-  static constexpr uint16_t kDays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
-  if (month < 1 || month > 12) {
-    return 0;
-  }
-  return kDays[month - 1] + ((month > 2 && leapYear(year)) ? 1 : 0);
-}
-
-uint32_t absoluteMinute(const RtcDateTime& dt, uint32_t fallbackUptimeMs) {
-  if (!dt.valid || dt.year < 2000) {
-    return fallbackUptimeMs / 60000UL;
-  }
-
-  uint32_t days = 0;
-  for (int year = 2000; year < dt.year; ++year) {
-    days += leapYear(year) ? 366UL : 365UL;
-  }
-  days += daysBeforeMonth(dt.year, dt.month);
-  days += static_cast<uint32_t>(dt.day > 0 ? dt.day - 1 : 0);
-  return days * 1440UL + static_cast<uint32_t>(dt.hour) * 60UL + dt.minute;
 }
 
 }  // namespace
@@ -149,7 +118,7 @@ bool AppController::ntpSynced() const {
 void AppController::readSensors(bool force) {
   const BatteryStatus previousBattery = state_.battery;
   const Shtc3Reading previousEnvironment = state_.environment;
-  const int previousEtaMinutes = state_.batteryEtaMinutes;
+  const int previousEtaMinutes = batteryRuntime_.etaMinutes();
 
   BatteryStatus nextBattery = battery_.readStatus();
   Shtc3Reading nextEnvironment;
@@ -157,7 +126,7 @@ void AppController::readSensors(bool force) {
   state_.battery = nextBattery;
   state_.environment = nextEnvironment;
   readRtc(force);
-  updateBatteryRuntimeEstimate();
+  batteryRuntime_.updateEstimate(state_.battery, millis() / 1000UL, config_.batteryLogIntervalMs);
 
   const uint32_t nowMs = millis();
   if (verifySdMounted() && storage_.isReady() &&
@@ -173,7 +142,7 @@ void AppController::readSensors(bool force) {
   if (force ||
       batteryDisplayChanged(previousBattery, state_.battery) ||
       environmentDisplayChanged(previousEnvironment, state_.environment) ||
-      previousEtaMinutes != state_.batteryEtaMinutes) {
+      previousEtaMinutes != batteryRuntime_.etaMinutes()) {
     markUiDirty();
   }
 }
@@ -315,25 +284,7 @@ void AppController::restoreBatteryHistoryFromStorage() {
     return;
   }
 
-  state_.batteryChartCount = 0;
-  state_.batteryChartStartMinute = points[0].absoluteMinute;
-  state_.batteryChartLastAbsoluteMinute = 0;
-  for (size_t i = 0; i < count; ++i) {
-    if (points[i].charging || points[i].absoluteMinute < state_.batteryChartStartMinute) {
-      continue;
-    }
-    const uint32_t elapsed = points[i].absoluteMinute - state_.batteryChartStartMinute;
-    if (elapsed > UINT16_MAX) {
-      continue;
-    }
-    const size_t index = state_.batteryChartCount++;
-    state_.batteryChart[index].minute = static_cast<uint16_t>(elapsed);
-    state_.batteryChart[index].percent = static_cast<uint8_t>(constrain(static_cast<int>(points[i].percent + 0.5f), 0, 100));
-    state_.batteryChartLastAbsoluteMinute = points[i].absoluteMinute;
-    if (state_.batteryChartCount >= State::BatteryChartSize) {
-      break;
-    }
-  }
+  batteryRuntime_.restoreChart(points, count);
   markUiDirty();
 }
 
@@ -458,8 +409,8 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.freePsram = ESP.getFreePsram();
   model.psramSize = ESP.getPsramSize();
   model.cpuMhz = getCpuFrequencyMhz();
-  model.batteryEtaMinutes = state_.batteryEtaMinutes;
-  rebuildBatteryChartPrediction(model);
+  model.batteryEtaMinutes = batteryRuntime_.etaMinutes();
+  batteryRuntime_.fillUiModel(model);
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
       state_.newMessageAlert && ((millis() / config_.newMessageBlinkMs) % 2 == 1);
@@ -721,193 +672,14 @@ void AppController::updateSelectedTodoAfterChange() {
   }
 }
 
-void AppController::updateBatteryRuntimeEstimate() {
-  const uint32_t nowS = millis() / 1000UL;
-  constexpr float kFilterAlpha = 0.18f;
-  constexpr float kEtaSmoothingAlpha = 0.25f;
-  constexpr float kMaxSingleSampleDropPercent = 3.0f;
-  constexpr float kMaxSingleSampleRisePercent = 1.0f;
-  constexpr float kMaxDischargeRecoveryPercent = 0.12f;
-  constexpr float kMinSlopePercentPerHour = 0.25f;
-  constexpr float kMaxSlopePercentPerHour = 30.0f;
-  constexpr uint32_t kMinBootAgeS = 20UL * 60UL;
-  constexpr uint32_t kMinElapsedS = 35UL * 60UL;
-  constexpr size_t kMinSamples = 8;
-  constexpr float kMinEstimatedDropPercent = 1.0f;
-
-  if (batteryInFullHold(state_.battery) || state_.battery.percentFloat <= 0.0f) {
-    state_.batteryHistoryCount = 0;
-    state_.batteryHistoryNext = 0;
-    state_.hasBatteryEtaFilter = false;
-    state_.hasBatteryEtaEstimate = false;
-    state_.lastBatteryEtaSampleS = 0;
-    state_.batteryEtaMinutes = -1;
-    state_.batteryEtaWasCharging = batteryInFullHold(state_.battery);
-    return;
-  }
-
-  if (state_.batteryEtaWasCharging) {
-    state_.batteryHistoryCount = 0;
-    state_.batteryHistoryNext = 0;
-    state_.hasBatteryEtaFilter = false;
-    state_.hasBatteryEtaEstimate = false;
-    state_.lastBatteryEtaSampleS = 0;
-    state_.batteryEtaMinutes = -1;
-    state_.batteryEtaWasCharging = false;
-  }
-
-  if (nowS < kMinBootAgeS) {
-    return;
-  }
-
-  float filteredPercent = state_.battery.percentFloat;
-  if (state_.hasBatteryEtaFilter) {
-    filteredPercent = state_.batteryEtaFilteredPercent +
-                      kFilterAlpha * (state_.battery.percentFloat - state_.batteryEtaFilteredPercent);
-    if (filteredPercent > state_.batteryEtaFilteredPercent + kMaxDischargeRecoveryPercent) {
-      filteredPercent = state_.batteryEtaFilteredPercent + kMaxDischargeRecoveryPercent;
-    }
-  } else {
-    state_.hasBatteryEtaFilter = true;
-  }
-
-  filteredPercent = constrain(filteredPercent, 0.0f, 100.0f);
-  if (state_.batteryHistoryCount > 0) {
-    const State::BatteryHistoryPoint& previous =
-        state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
-    const float sampleDelta = filteredPercent - previous.percent;
-    if (-sampleDelta > kMaxSingleSampleDropPercent || sampleDelta > kMaxSingleSampleRisePercent) {
-      return;
-    }
-  }
-  state_.batteryEtaFilteredPercent = filteredPercent;
-
-  const uint32_t minSampleIntervalS = max<uint32_t>(1, config_.batteryLogIntervalMs / 1000UL);
-  if (state_.lastBatteryEtaSampleS != 0 && nowS - state_.lastBatteryEtaSampleS < minSampleIntervalS) {
-    return;
-  }
-  state_.lastBatteryEtaSampleS = nowS;
-
-  state_.batteryHistory[state_.batteryHistoryNext].uptimeS = nowS;
-  state_.batteryHistory[state_.batteryHistoryNext].percent = filteredPercent;
-  state_.batteryHistoryNext = (state_.batteryHistoryNext + 1) % State::BatteryHistorySize;
-  if (state_.batteryHistoryCount < State::BatteryHistorySize) {
-    ++state_.batteryHistoryCount;
-  }
-
-  if (state_.batteryHistoryCount < kMinSamples) {
-    return;
-  }
-
-  const size_t oldestIndex =
-      state_.batteryHistoryCount < State::BatteryHistorySize ? 0 : state_.batteryHistoryNext;
-  const State::BatteryHistoryPoint& oldest = state_.batteryHistory[oldestIndex];
-  const State::BatteryHistoryPoint& newest =
-      state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
-
-  const uint32_t elapsedS = newest.uptimeS - oldest.uptimeS;
-  if (elapsedS < kMinElapsedS) {
-    return;
-  }
-
-  double sumT = 0.0;
-  double sumP = 0.0;
-  double sumTT = 0.0;
-  double sumTP = 0.0;
-  for (size_t i = 0; i < state_.batteryHistoryCount; ++i) {
-    const size_t index = (oldestIndex + i) % State::BatteryHistorySize;
-    const double t = static_cast<double>(state_.batteryHistory[index].uptimeS - oldest.uptimeS);
-    const double p = static_cast<double>(state_.batteryHistory[index].percent);
-    sumT += t;
-    sumP += p;
-    sumTT += t * t;
-    sumTP += t * p;
-  }
-
-  const double n = static_cast<double>(state_.batteryHistoryCount);
-  const double denominator = n * sumTT - sumT * sumT;
-  if (denominator <= 0.0) {
-    return;
-  }
-
-  const double slopePercentPerSecond = (n * sumTP - sumT * sumP) / denominator;
-  const float dischargePercentPerHour = static_cast<float>(-slopePercentPerSecond * 3600.0);
-  const float estimatedDropPercent = dischargePercentPerHour * elapsedS / 3600.0f;
-  if (dischargePercentPerHour < kMinSlopePercentPerHour ||
-      dischargePercentPerHour > kMaxSlopePercentPerHour ||
-      estimatedDropPercent < kMinEstimatedDropPercent) {
-    return;
-  }
-
-  const float etaMinutes = newest.percent / dischargePercentPerHour * 60.0f;
-  if (etaMinutes > 0.0f && etaMinutes < 10000.0f) {
-    if (state_.hasBatteryEtaEstimate && state_.batteryEtaMinutes >= 0) {
-      const float smoothedEta = state_.batteryEtaMinutes +
-                                kEtaSmoothingAlpha * (etaMinutes - static_cast<float>(state_.batteryEtaMinutes));
-      state_.batteryEtaMinutes = static_cast<int>(smoothedEta + 0.5f);
-    } else {
-      state_.batteryEtaMinutes = static_cast<int>(etaMinutes + 0.5f);
-      state_.hasBatteryEtaEstimate = true;
-    }
-  }
-}
-
 void AppController::appendBatteryChartSample(const BatteryStatus& battery) {
-  const uint32_t nowMinute = absoluteMinute(state_.now, millis());
-  const uint32_t minIntervalMinutes = max<uint32_t>(1, config_.batteryLogIntervalMs / 60000UL);
-
-  if (batteryInFullHold(battery)) {
-    state_.batteryChartCount = 0;
-    state_.batteryChartStartMinute = 0;
-    state_.batteryChartLastAbsoluteMinute = nowMinute;
+  if (batteryRuntime_.appendChartSample(battery, state_.now, millis(), config_.batteryLogIntervalMs)) {
     markUiDirty();
-    return;
   }
-
-  if (state_.batteryChartCount > 0 &&
-      nowMinute - state_.batteryChartLastAbsoluteMinute < minIntervalMinutes) {
-    return;
-  }
-
-  if (state_.batteryChartStartMinute == 0 || nowMinute < state_.batteryChartStartMinute) {
-    state_.batteryChartStartMinute = nowMinute;
-    state_.batteryChartCount = 0;
-  }
-
-  const uint32_t elapsed = nowMinute - state_.batteryChartStartMinute;
-  if (elapsed > UINT16_MAX) {
-    return;
-  }
-
-  if (state_.batteryChartCount >= State::BatteryChartSize) {
-    const uint32_t removedMinutes = state_.batteryChart[1].minute;
-    for (size_t i = 1; i < state_.batteryChartCount; ++i) {
-      state_.batteryChart[i - 1] = state_.batteryChart[i];
-      state_.batteryChart[i - 1].minute -= removedMinutes;
-    }
-    state_.batteryChartStartMinute += removedMinutes;
-    --state_.batteryChartCount;
-  }
-
-  const size_t index = state_.batteryChartCount++;
-  state_.batteryChart[index].minute = static_cast<uint16_t>(elapsed);
-  state_.batteryChart[index].percent = static_cast<uint8_t>(constrain(static_cast<int>(battery.percentFloat + 0.5f), 0, 100));
-  state_.batteryChartLastAbsoluteMinute = nowMinute;
-  markUiDirty();
 }
 
 void AppController::resetBatteryWindow() {
-  state_.batteryHistoryCount = 0;
-  state_.batteryHistoryNext = 0;
-  state_.hasBatteryEtaFilter = false;
-  state_.hasBatteryEtaEstimate = false;
-  state_.batteryEtaWasCharging = state_.battery.charging;
-  state_.batteryEtaFilteredPercent = 0.0f;
-  state_.lastBatteryEtaSampleS = 0;
-  state_.batteryEtaMinutes = -1;
-  state_.batteryChartCount = 0;
-  state_.batteryChartStartMinute = 0;
-  state_.batteryChartLastAbsoluteMinute = 0;
+  batteryRuntime_.reset(state_.battery.charging);
 
   if (verifySdMounted() && storage_.isReady()) {
     BatteryStatus resetMarker = state_.battery;
@@ -921,22 +693,6 @@ void AppController::resetBatteryWindow() {
 
   appendBatteryChartSample(state_.battery);
   markUiDirty();
-}
-
-void AppController::rebuildBatteryChartPrediction(DesktopClockUiModel& model) const {
-  if (state_.batteryChartCount == 0) {
-    return;
-  }
-
-  model.batteryChart = state_.batteryChart;
-  model.batteryChartCount = state_.batteryChartCount;
-  model.batteryChartNowMinute = state_.batteryChart[state_.batteryChartCount - 1].minute;
-  model.batteryChartPredictedZeroMinute = model.batteryChartNowMinute;
-  if (state_.batteryEtaMinutes > 0) {
-    const uint32_t predicted = static_cast<uint32_t>(model.batteryChartNowMinute) +
-                               static_cast<uint32_t>(state_.batteryEtaMinutes);
-    model.batteryChartPredictedZeroMinute = static_cast<uint16_t>(min<uint32_t>(UINT16_MAX, predicted));
-  }
 }
 
 HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {

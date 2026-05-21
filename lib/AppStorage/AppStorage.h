@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 #include "BatteryMonitor.h"
-#include "HubService.h"
+#include "HubTypes.h"
 #include "RtcClock.h"
 #include "SdCardStorage.h"
 #include "WifiCredential.h"
