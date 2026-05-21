@@ -44,8 +44,30 @@ void HubService::setDeviceSecret(const char* deviceSecret) {
   deviceSecret_.trim();
 }
 
+void HubService::setDeviceBinding(bool bound, const char* bindCode, const char* name) {
+  bound_ = bound;
+  bindCode_ = bindCode ? bindCode : "";
+  deviceName_ = name ? name : "";
+}
+
 bool HubService::isConfigured() const {
   return baseUrl_.length() > 0 && hasUsableCredential(deviceSecret_.c_str());
+}
+
+const String& HubService::deviceId() const {
+  return deviceId_;
+}
+
+bool HubService::isBound() const {
+  return bound_;
+}
+
+const String& HubService::bindCode() const {
+  return bindCode_;
+}
+
+const String& HubService::deviceName() const {
+  return deviceName_;
 }
 
 void HubService::configureTelemetry(uint32_t intervalMs, uint32_t syncIconMinMs) {
@@ -108,6 +130,11 @@ HubHelloResult HubService::hello(bool networkReady, HubStateChangedCallback onSt
   HubHelloResult result = sendHello();
   if (result.ok && result.deviceSecret.length() > 0) {
     setDeviceSecret(result.deviceSecret.c_str());
+  }
+  if (result.ok) {
+    bound_ = result.bound;
+    bindCode_ = result.bindCode;
+    deviceName_ = result.name;
   }
   completeRequest(result, nowMs);
   return result;

@@ -131,12 +131,17 @@ public:
 
   void begin(const char* baseUrl, const char* deviceSecret, const char* deviceId);
   void setDeviceSecret(const char* deviceSecret);
+  void setDeviceBinding(bool bound, const char* bindCode, const char* name);
   void configureTelemetry(uint32_t intervalMs, uint32_t syncIconMinMs);
   void configureMessages(const char* channel, uint32_t pollIntervalMs, uint8_t limit);
   void configureWeather(uint32_t pollIntervalMs);
   void configureTodos(uint32_t pollIntervalMs, uint8_t limit = MaxTodos);
   void setVerbose(bool verbose);
   bool isConfigured() const;
+  const String& deviceId() const;
+  bool isBound() const;
+  const String& bindCode() const;
+  const String& deviceName() const;
   bool isSyncing() const;
   bool hasFailed() const;
   bool update(uint32_t nowMs = millis());
@@ -217,6 +222,9 @@ private:
   String baseUrl_;
   String deviceSecret_;
   String deviceId_;
+  String bindCode_;
+  String deviceName_;
+  bool bound_ = false;
   uint32_t sequence_ = 0;
   uint32_t telemetryIntervalMs_ = 5UL * 60UL * 1000UL;
   uint32_t messagePollIntervalMs_ = 60UL * 1000UL;

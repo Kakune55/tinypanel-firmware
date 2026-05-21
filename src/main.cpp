@@ -289,6 +289,7 @@ void setup() {
   bootLog("hub: configure client");
   const char* initialHubSecret = hubCredentials.deviceSecret[0] ? hubCredentials.deviceSecret : AppSecrets::HubServerApiKey;
   hub.begin(AppSecrets::HubServerBaseURL, initialHubSecret, deviceConfig.deviceId);
+  hub.setDeviceBinding(hubCredentials.bound, hubCredentials.bindCode, hubCredentials.deviceName);
   hub.configureTelemetry(deviceConfig.hubTelemetryMs, kHubSyncIconMinMs);
   hub.configureMessages(deviceConfig.messageChannel, deviceConfig.hubMessagePollMs, deviceConfig.hubMessageLimit);
   hub.configureWeather(deviceConfig.hubWeatherPollMs);

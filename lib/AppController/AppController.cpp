@@ -431,6 +431,11 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.ntpSyncFailed = state_.ntpSyncFailed;
   model.hubSyncing = hub_.isSyncing();
   model.hubSyncFailed = hub_.hasFailed();
+  model.hubConfigured = hub_.isConfigured();
+  model.hubBound = hub_.isBound();
+  model.hubDeviceId = hub_.deviceId();
+  model.hubBindCode = hub_.bindCode();
+  model.hubDeviceName = hub_.deviceName();
   model.sdMounted = state_.sdMounted;
   model.sdStatus = sdCard_.lastErrorText();
   model.storageReady = storage_.isReady();
