@@ -168,6 +168,48 @@ bool AppStorage::loadDeviceConfig(StoredDeviceConfig& config) const {
   return true;
 }
 
+bool AppStorage::loadHubCredentials(StoredHubCredentials& out) const {
+  out = {};
+  if (!isReady()) {
+    return false;
+  }
+
+  String text;
+  if (!sd_->readText(HubCredentialsPath, text, 2048)) {
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, text);
+  if (error) {
+    return false;
+  }
+
+  copyField(out.deviceSecret, sizeof(out.deviceSecret), doc["device_secret"] | "");
+  copyField(out.bindCode, sizeof(out.bindCode), doc["bind_code"] | "");
+  copyField(out.deviceName, sizeof(out.deviceName), doc["name"] | "");
+  out.bound = doc["bound"] | false;
+  return out.deviceSecret[0] != '\0' || out.bindCode[0] != '\0';
+}
+
+bool AppStorage::saveHubCredentials(const StoredHubCredentials& credentials) {
+  if (!isReady()) {
+    return false;
+  }
+
+  JsonDocument doc;
+  doc["version"] = kSchemaVersion;
+  doc["device_secret"] = credentials.deviceSecret;
+  doc["bind_code"] = credentials.bindCode;
+  doc["bound"] = credentials.bound;
+  doc["name"] = credentials.deviceName;
+
+  String text;
+  text.reserve(measureJson(doc) + 1);
+  serializeJson(doc, text);
+  return sd_->writeTextAtomic(HubCredentialsPath, text);
+}
+
 bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
   if (!isReady() || (!messages && count > 0)) {
     return false;

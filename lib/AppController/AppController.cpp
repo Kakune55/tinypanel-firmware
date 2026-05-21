@@ -496,7 +496,7 @@ bool AppController::runNextScheduledTask() {
       return true;
     case State::ScheduledTaskStep::Messages:
       pollHubMessages(state_.scheduledTaskForce);
-      state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Todos;
       return true;
     case State::ScheduledTaskStep::TodoSync: {
       HubRequestResult todoSync = hub_.syncTodoChanges(wifi_.isConnected(), handleHubStateChanged);

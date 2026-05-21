@@ -84,6 +84,7 @@ BatteryCurvePoint sdBatteryCurve[BatteryMonitor::MaxExternalCurvePoints];
 HubMessage sdCachedMessages[HubService::MaxMessages];
 HubWeather sdCachedWeather;
 HubTodo sdCachedTodos[HubService::MaxTodos];
+StoredHubCredentials hubCredentials;
 
 void storageLog(const char* event, const char* detail, const char* level = "INFO") {
   if (!appStorage.isReady()) {
@@ -218,6 +219,14 @@ void setup() {
       storageLog("device_config", "using built-in");
     }
 
+    if (appStorage.loadHubCredentials(hubCredentials)) {
+      bootLog(hubCredentials.deviceSecret[0] ? "hub secret: sd" : "hub secret: pending");
+      if (hubCredentials.bindCode[0] && !hubCredentials.bound) {
+        bootLogf("bind: %s", hubCredentials.bindCode);
+      }
+      storageLog("hub_credentials", "loaded from sd");
+    }
+
     size_t curveCount = 0;
     if (appStorage.loadBatteryCurve(sdBatteryCurve, BatteryMonitor::MaxExternalCurvePoints, curveCount) &&
         battery.setBatteryCurve(sdBatteryCurve, curveCount)) {
@@ -277,11 +286,42 @@ void setup() {
   }
 
   bootLog("hub: configure client");
-  hub.begin(AppSecrets::HubServerBaseURL, AppSecrets::HubServerApiKey, deviceConfig.deviceId);
+  const char* initialHubSecret = hubCredentials.deviceSecret[0] ? hubCredentials.deviceSecret : AppSecrets::HubServerApiKey;
+  hub.begin(AppSecrets::HubServerBaseURL, initialHubSecret, deviceConfig.deviceId);
   hub.configureTelemetry(deviceConfig.hubTelemetryMs, kHubSyncIconMinMs);
   hub.configureMessages(deviceConfig.messageChannel, deviceConfig.hubMessagePollMs, deviceConfig.hubMessageLimit);
   hub.configureWeather(deviceConfig.hubWeatherPollMs);
   hub.configureTodos(deviceConfig.hubTodoPollMs, deviceConfig.hubTodoLimit);
+
+  if (wifi.isConnected() && AppSecrets::HubServerBaseURL[0] != '\0') {
+    HubHelloResult hello = hub.hello(true);
+    if (hello.attempted && hello.ok) {
+      if (hello.deviceSecret.length() > 0) {
+        snprintf(hubCredentials.deviceSecret,
+                 sizeof(hubCredentials.deviceSecret),
+                 "%s",
+                 hello.deviceSecret.c_str());
+      }
+      snprintf(hubCredentials.bindCode, sizeof(hubCredentials.bindCode), "%s", hello.bindCode.c_str());
+      snprintf(hubCredentials.deviceName, sizeof(hubCredentials.deviceName), "%s", hello.name.c_str());
+      hubCredentials.bound = hello.bound;
+      if (appStorage.isReady()) {
+        appStorage.saveHubCredentials(hubCredentials);
+      }
+      if (hello.bound) {
+        bootLog("hub hello: bound");
+      } else if (hello.bindCode.length() > 0) {
+        bootLogf("bind: %s", hello.bindCode.c_str());
+      } else {
+        bootLog("hub hello: unbound");
+      }
+      storageLog("hub_hello", hello.bound ? "bound" : "unbound");
+    } else if (hello.attempted) {
+      bootLogf("hub hello: failed %d", hello.statusCode);
+      storageLog("hub_hello", "failed", "WARN");
+    }
+  }
+
   Serial.printf("Hub: telemetry %s\n", hub.isConfigured() ? "configured" : "disabled");
   bootLogf("hub: %s", hub.isConfigured() ? "configured" : "disabled");
   storageLog("hub", hub.isConfigured() ? "configured" : "disabled", hub.isConfigured() ? "INFO" : "WARN");

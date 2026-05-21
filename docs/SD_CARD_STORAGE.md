@@ -74,9 +74,37 @@ TinyPanel 可以使用 microSD 卡保存运行时配置、缓存和日志。SD �
 - 文件缺失或格式错误时使用固件内置配置。
 - `device_id` 会同时用于 Hub 客户端和遥测。
 - `timezone` 用于 NTP 同步。
-- `message_channel` 用于消息订阅。
+- `message_channel` 是旧 Hub 兼容字段，新 Hub 设备消息按 `device_id` 投递，不再使用 channel。
 - `hub_message_limit` 最大为 10，`hub_todo_limit` 最大为 12。
 - 所有 `*_s` 字段单位都是秒。
+
+## Hub 设备凭据
+
+路径：
+
+```text
+/tinypanel/state/hub.json
+```
+
+示例：
+
+```json
+{
+  "version": 1,
+  "device_secret": "generated-device-secret",
+  "bind_code": "483921",
+  "bound": false,
+  "name": ""
+}
+```
+
+行为：
+
+- 新 Hub 使用 `X-Device-ID` 和 `X-Device-Secret` 鉴权。
+- 如果 `device_secret` 为空，固件联网后会调用 `POST /api/v1/device/hello` 获取并保存。
+- 未绑定设备时，Hub 返回的 `bind_code` 会显示在启动日志中，用于用户侧绑定设备。
+- TODO 使用设备端只读接口 `GET /api/v1/device/todos` 同步，不需要保存用户 Token。
+- `hub.json` 含敏感凭据，不建议把 SD 卡交给不可信环境读取。
 
 ## 消息缓存
 
@@ -150,10 +178,11 @@ constexpr const char* WifiSsid = "YOUR_WIFI_SSID";
 constexpr const char* WifiPassword = "YOUR_WIFI_PASSWORD";
 
 constexpr const char* HubServerBaseURL = "http://192.168.1.2:8080/api/v1";
-constexpr const char* HubServerApiKey = "YOUR_HUB_SERVER_API_KEY";
+constexpr const char* HubServerApiKey = "YOUR_HUB_DEVICE_SECRET";
 
 }  // namespace AppSecrets
 ```
 
-建议把 Hub API Key 继续放在 `AppSecrets.h` 里。除非你明确接受风险，
-否则不要把服务器密钥放到可拔出的 SD 卡上。
+`HubServerApiKey` 保留旧字段名用于兼容现有 `AppSecrets.h`，新版 Hub 中它表示设备
+secret。也可以留空或使用 `YOUR_*` 占位，让固件通过 device hello 自动获取并写入
+`/tinypanel/state/hub.json`。

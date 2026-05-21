@@ -39,6 +39,15 @@ struct HubRequestResult {
   int statusCode = 0;
 };
 
+struct HubHelloResult : HubRequestResult {
+  String deviceSecret;
+  String bindCode;
+  uint32_t bindCodeTtlS = 0;
+  bool bound = false;
+  String name;
+  String serverTime;
+};
+
 struct HubMessage {
   int id = 0;
   String channel;
@@ -120,7 +129,8 @@ public:
   static constexpr size_t MaxMessages = 10;
   static constexpr size_t MaxTodos = 12;
 
-  void begin(const char* baseUrl, const char* apiKey, const char* deviceId);
+  void begin(const char* baseUrl, const char* deviceSecret, const char* deviceId);
+  void setDeviceSecret(const char* deviceSecret);
   void configureTelemetry(uint32_t intervalMs, uint32_t syncIconMinMs);
   void configureMessages(const char* channel, uint32_t pollIntervalMs, uint8_t limit);
   void configureWeather(uint32_t pollIntervalMs);
@@ -130,6 +140,9 @@ public:
   bool isSyncing() const;
   bool hasFailed() const;
   bool update(uint32_t nowMs = millis());
+  HubHelloResult hello(bool networkReady,
+                       HubStateChangedCallback onStateChanged = nullptr,
+                       uint32_t nowMs = millis());
   HubRequestResult syncTelemetry(const HubTelemetrySnapshot& snapshot,
                                  bool force,
                                  bool networkReady,
@@ -167,20 +180,25 @@ public:
 
 private:
   HubRequestResult sendTelemetry(const HubTelemetrySnapshot& snapshot);
+  HubHelloResult sendHello();
   HubRequestResult syncSubscription();
   HubRequestResult fetchWeather();
   HubRequestResult fetchTodos();
-  HubRequestResult patchTodoStatus(HubTodo& todo);
-  HubRequestResult deleteTodoByVersion(int id, int version);
-  HubRequestResult fetchMessage(int id, HubMessage& out);
-  HubRequestResult ackMessage(int id);
+  bool parseWeather(JsonVariantConst source, HubWeather& weather) const;
+  bool parseMessage(JsonObjectConst item, HubMessage& out) const;
+  HubRequestResult ackMessages(const int* ids, size_t count);
   void storeMessage(const HubMessage& message);
   bool hasMessage(int id) const;
-  HubRequestResult postJson(const char* path, const char* body, size_t bodyLen, const char* label);
-  HubRequestResult patchJson(const char* path, const char* body, size_t bodyLen, JsonDocument* response, const char* label);
-  HubRequestResult deleteJson(const char* path, const char* body, size_t bodyLen, const char* label);
-  HubRequestResult getJson(const char* path, JsonDocument& doc, const char* label);
+
+  enum class AuthMode {
+    None,
+    Device,
+  };
+
+  HubRequestResult postJson(AuthMode auth, const char* path, const char* body, size_t bodyLen, JsonDocument* response, const char* label);
+  HubRequestResult getJson(AuthMode auth, const char* path, JsonDocument& doc, const char* label);
   HubRequestResult requestJson(const char* method,
+                               AuthMode auth,
                                const char* path,
                                const char* body,
                                size_t bodyLen,
@@ -196,13 +214,8 @@ private:
   bool timeReached(uint32_t nowMs, uint32_t targetMs) const;
   bool hasUsableCredential(const char* value) const;
 
-  struct PendingTodoDelete {
-    int id = 0;
-    int version = 0;
-  };
-
   String baseUrl_;
-  String apiKey_;
+  String deviceSecret_;
   String deviceId_;
   uint32_t sequence_ = 0;
   uint32_t telemetryIntervalMs_ = 5UL * 60UL * 1000UL;
@@ -227,8 +240,6 @@ private:
   uint8_t todoLimit_ = MaxTodos;
   HubTodo todos_[MaxTodos];
   size_t todoCount_ = 0;
-  PendingTodoDelete pendingTodoDeletes_[MaxTodos];
-  size_t pendingTodoDeleteCount_ = 0;
   WiFiClient client_;
   WiFiClientSecure secureClient_;
   JsonDocument jsonDoc_;
