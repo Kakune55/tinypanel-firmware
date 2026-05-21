@@ -32,6 +32,11 @@ struct DesktopClockUiModel {
   bool ntpSyncFailed = false;
   bool hubSyncing = false;
   bool hubSyncFailed = false;
+  bool hubConfigured = false;
+  bool hubBound = false;
+  String hubDeviceId;
+  String hubBindCode;
+  String hubDeviceName;
   bool sdMounted = false;
   const char* sdStatus = "NO CARD";
   bool storageReady = false;

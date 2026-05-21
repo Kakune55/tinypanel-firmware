@@ -20,21 +20,54 @@ const char* batteryStatusText(const BatteryStatus& battery, bool usbConnected) {
   return battery.critical ? "critical" : "discharging";
 }
 
+bool hasUsableSecret(const String& value) {
+  return value.length() > 0 && value != "YOUR_HUB_SERVER_API_KEY" &&
+         value != "YOUR_HUB_DEVICE_SECRET";
+}
+
 }  // namespace
 
-void HubService::begin(const char* baseUrl, const char* apiKey, const char* deviceId) {
+void HubService::begin(const char* baseUrl, const char* deviceSecret, const char* deviceId) {
   baseUrl_ = baseUrl ? baseUrl : "";
-  apiKey_ = apiKey ? apiKey : "";
+  deviceSecret_ = deviceSecret ? deviceSecret : "";
   deviceId_ = deviceId ? deviceId : "tinypanel-001";
 
   baseUrl_.trim();
+  deviceSecret_.trim();
   while (baseUrl_.endsWith("/")) {
     baseUrl_.remove(baseUrl_.length() - 1);
   }
 }
 
+void HubService::setDeviceSecret(const char* deviceSecret) {
+  deviceSecret_ = deviceSecret ? deviceSecret : "";
+  deviceSecret_.trim();
+}
+
+void HubService::setDeviceBinding(bool bound, const char* bindCode, const char* name) {
+  bound_ = bound;
+  bindCode_ = bindCode ? bindCode : "";
+  deviceName_ = name ? name : "";
+}
+
 bool HubService::isConfigured() const {
-  return baseUrl_.length() > 0 && hasUsableCredential(apiKey_.c_str());
+  return baseUrl_.length() > 0 && hasUsableCredential(deviceSecret_.c_str());
+}
+
+const String& HubService::deviceId() const {
+  return deviceId_;
+}
+
+bool HubService::isBound() const {
+  return bound_;
+}
+
+const String& HubService::bindCode() const {
+  return bindCode_;
+}
+
+const String& HubService::deviceName() const {
+  return deviceName_;
 }
 
 void HubService::configureTelemetry(uint32_t intervalMs, uint32_t syncIconMinMs) {
@@ -86,6 +119,25 @@ bool HubService::update(uint32_t nowMs) {
   syncState_ = lastRequestOk_ ? HubSyncState::Idle : HubSyncState::Failed;
   requestResultPending_ = false;
   return true;
+}
+
+HubHelloResult HubService::hello(bool networkReady, HubStateChangedCallback onStateChanged, uint32_t nowMs) {
+  if (baseUrl_.length() == 0 || !networkReady) {
+    return {};
+  }
+
+  beginRequest(nowMs, onStateChanged);
+  HubHelloResult result = sendHello();
+  if (result.ok && result.deviceSecret.length() > 0) {
+    setDeviceSecret(result.deviceSecret.c_str());
+  }
+  if (result.ok) {
+    bound_ = result.bound;
+    bindCode_ = result.bindCode;
+    deviceName_ = result.name;
+  }
+  completeRequest(result, nowMs);
+  return result;
 }
 
 HubRequestResult HubService::syncTelemetry(const HubTelemetrySnapshot& snapshot,
@@ -152,89 +204,21 @@ HubRequestResult HubService::pollTodos(bool force,
 HubRequestResult HubService::syncTodoChanges(bool networkReady,
                                              HubStateChangedCallback onStateChanged,
                                              uint32_t nowMs) {
-  if (!isConfigured() || !networkReady) {
-    return {};
-  }
-
-  bool hasChanges = pendingTodoDeleteCount_ > 0;
-  for (size_t i = 0; i < todoCount_ && !hasChanges; ++i) {
-    hasChanges = todos_[i].dirty;
-  }
-  if (!hasChanges) {
-    return {};
-  }
-
-  beginRequest(nowMs, onStateChanged);
-  HubRequestResult result;
-  result.attempted = true;
-  result.ok = true;
-
-  for (size_t i = 0; i < todoCount_; ++i) {
-    if (!todos_[i].dirty) {
-      continue;
-    }
-    HubRequestResult patchResult = patchTodoStatus(todos_[i]);
-    result.statusCode = patchResult.statusCode;
-    result.ok = result.ok && patchResult.ok;
-    if (!patchResult.ok && patchResult.statusCode == 409) {
-      break;
-    }
-  }
-
-  if (result.ok) {
-    for (size_t i = 0; i < pendingTodoDeleteCount_; ++i) {
-      HubRequestResult deleteResult =
-          deleteTodoByVersion(pendingTodoDeletes_[i].id, pendingTodoDeletes_[i].version);
-      result.statusCode = deleteResult.statusCode;
-      result.ok = result.ok && deleteResult.ok;
-      if (!deleteResult.ok && deleteResult.statusCode == 409) {
-        break;
-      }
-    }
-  }
-
-  if (result.ok) {
-    pendingTodoDeleteCount_ = 0;
-    lastTodoPollMs_ = 0;
-    HubRequestResult refresh = fetchTodos();
-    result.ok = refresh.ok;
-    result.statusCode = refresh.statusCode;
-  } else if (result.statusCode == 409) {
-    pendingTodoDeleteCount_ = 0;
-    fetchTodos();
-  }
-
-  completeRequest(result, nowMs);
-  return result;
+  (void)networkReady;
+  (void)onStateChanged;
+  (void)nowMs;
+  return {};
 }
 
 bool HubService::setTodoStatusLocal(size_t index, int status) {
-  if (index >= todoCount_ || status < 0 || status > 2) {
-    return false;
-  }
-  if (todos_[index].status == status) {
-    return true;
-  }
-  todos_[index].status = status;
-  todos_[index].dirty = true;
-  return true;
+  (void)index;
+  (void)status;
+  return false;
 }
 
 bool HubService::deleteTodoLocal(size_t index) {
-  if (index >= todoCount_) {
-    return false;
-  }
-  if (pendingTodoDeleteCount_ < MaxTodos && todos_[index].id > 0 && todos_[index].version > 0) {
-    pendingTodoDeletes_[pendingTodoDeleteCount_].id = todos_[index].id;
-    pendingTodoDeletes_[pendingTodoDeleteCount_].version = todos_[index].version;
-    ++pendingTodoDeleteCount_;
-  }
-
-  for (size_t i = index + 1; i < todoCount_; ++i) {
-    todos_[i - 1] = todos_[i];
-  }
-  --todoCount_;
-  return true;
+  (void)index;
+  return false;
 }
 
 size_t HubService::messageCount() const {
@@ -311,7 +295,6 @@ bool HubService::setTodos(const HubTodo* todos, size_t count) {
     todos_[i] = todos[i];
     todos_[i].dirty = false;
   }
-  pendingTodoDeleteCount_ = 0;
   return true;
 }
 
@@ -366,63 +349,72 @@ HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot)
   body.reserve(measureJson(doc) + 1);
   serializeJson(doc, body);
 
-  return postJson("/telemetry", body.c_str(), body.length(), "telemetry");
+  return postJson(AuthMode::Device, "/device/telemetry", body.c_str(), body.length(), nullptr, "telemetry");
 }
 
-HubRequestResult HubService::syncSubscription() {
-  char channel[96];
-  char device[96];
-  char path[240];
-  if (!urlEncode(messageChannel_.c_str(), channel, sizeof(channel)) ||
-      !urlEncode(deviceId_.c_str(), device, sizeof(device))) {
-    HubRequestResult result;
-    result.attempted = true;
-    Serial.println("Hub: subscription path too long");
-    return result;
-  }
+HubHelloResult HubService::sendHello() {
+  responseDoc_.clear();
+  HubRequestResult request =
+      postJson(AuthMode::None, "/device/hello", nullptr, 0, &responseDoc_, "device hello");
 
-  const int pathLen = snprintf(path, sizeof(path), "/subscriptions/%s?device_id=%s&limit=%u",
-                               channel, device, static_cast<unsigned>(messageLimit_));
-  if (pathLen < 0 || pathLen >= static_cast<int>(sizeof(path))) {
-    HubRequestResult result;
-    result.attempted = true;
-    Serial.println("Hub: subscription path too long");
-    return result;
-  }
-
-  jsonDoc_.clear();
-  HubRequestResult result = getJson(path, jsonDoc_, "subscription");
+  HubHelloResult result;
+  result.attempted = request.attempted;
+  result.ok = request.ok;
+  result.statusCode = request.statusCode;
   if (!result.ok) {
     return result;
   }
 
-  int messageIds[MaxMessages];
-  size_t messageIdCount = 0;
+  result.deviceSecret = responseDoc_["device_secret"] | "";
+  result.bindCode = responseDoc_["bind_code"] | "";
+  result.bindCodeTtlS = responseDoc_["bind_code_ttl"] | 0;
+  result.bound = responseDoc_["bound"] | false;
+  result.name = responseDoc_["name"] | "";
+  result.serverTime = responseDoc_["server_time"] | "";
+  return result;
+}
+
+HubRequestResult HubService::syncSubscription() {
+  char path[48];
+  const int pathLen = snprintf(path, sizeof(path), "/device/messages?limit=%u",
+                               static_cast<unsigned>(messageLimit_));
+  if (pathLen < 0 || pathLen >= static_cast<int>(sizeof(path))) {
+    HubRequestResult result;
+    result.attempted = true;
+    Serial.println("Hub: messages path too long");
+    return result;
+  }
+
+  jsonDoc_.clear();
+  HubRequestResult result = getJson(AuthMode::Device, path, jsonDoc_, "messages");
+  if (!result.ok) {
+    return result;
+  }
+
+  int ackIds[MaxMessages];
+  size_t ackCount = 0;
   bool ok = true;
-  JsonArray ids = jsonDoc_["message_ids"].as<JsonArray>();
-  for (JsonVariant idValue : ids) {
-    if (messageIdCount >= MaxMessages) {
+  JsonArrayConst messages = jsonDoc_["messages"].as<JsonArrayConst>();
+  if (messages.isNull()) {
+    result.ok = false;
+    return result;
+  }
+
+  for (JsonObjectConst item : messages) {
+    if (ackCount >= MaxMessages) {
       break;
     }
-    const int id = idValue.as<int>();
-    if (id <= 0) {
-      continue;
-    }
-    messageIds[messageIdCount++] = id;
-  }
-  jsonDoc_.clear();
-
-  for (size_t i = 0; i < messageIdCount; ++i) {
-    const int id = messageIds[i];
     HubMessage message;
-    HubRequestResult fetchResult = fetchMessage(id, message);
-    ok = ok && fetchResult.ok;
-    if (!fetchResult.ok) {
+    if (!parseMessage(item, message)) {
+      ok = false;
       continue;
     }
-
     storeMessage(message);
-    HubRequestResult ackResult = ackMessage(id);
+    ackIds[ackCount++] = message.id;
+  }
+
+  if (ackCount > 0) {
+    HubRequestResult ackResult = ackMessages(ackIds, ackCount);
     ok = ok && ackResult.ok;
   }
 
@@ -432,21 +424,38 @@ HubRequestResult HubService::syncSubscription() {
 
 HubRequestResult HubService::fetchWeather() {
   jsonDoc_.clear();
-  HubRequestResult result = getJson("/weather", jsonDoc_, "weather");
+  HubRequestResult result = getJson(AuthMode::Device, "/device/snapshot?include=weather", jsonDoc_, "device snapshot");
   if (!result.ok) {
     return result;
   }
 
   HubWeather weather;
-  weather.location = jsonDoc_["location"] | "";
-  weather.condition = jsonDoc_["condition"] | "";
-  weather.icon = jsonDoc_["icon"] | "";
-  weather.temperature = jsonDoc_["temperature"] | 0;
-  weather.humidity = jsonDoc_["humidity"] | 0;
-  weather.updatedAt = jsonDoc_["updated_at"] | "";
+  result.ok = parseWeather(jsonDoc_["weather"], weather);
+  if (result.ok) {
+    weather_ = weather;
+  }
+  return result;
+}
 
-  JsonArray hourly = jsonDoc_["hourly"].as<JsonArray>();
-  for (JsonObject item : hourly) {
+bool HubService::parseWeather(JsonVariantConst source, HubWeather& weather) const {
+  JsonObjectConst root = source.as<JsonObjectConst>();
+  if (root.isNull()) {
+    root = source.as<JsonObjectConst>();
+  }
+  if (root.isNull()) {
+    return false;
+  }
+
+  weather = {};
+  weather.location = root["location"] | "";
+  weather.condition = root["condition"] | "";
+  weather.icon = root["icon"] | "";
+  weather.temperature = root["temperature"] | 0;
+  weather.humidity = root["humidity"] | 0;
+  weather.updatedAt = root["updated_at"] | "";
+
+  JsonArrayConst hourly = root["hourly"].as<JsonArrayConst>();
+  for (JsonObjectConst item : hourly) {
     if (weather.hourlyCount >= HubWeather::MaxHourly) {
       break;
     }
@@ -463,8 +472,8 @@ HubRequestResult HubService::fetchWeather() {
     out.windSpeed = item["wind_speed"] | 0;
   }
 
-  JsonArray daily = jsonDoc_["daily"].as<JsonArray>();
-  for (JsonObject item : daily) {
+  JsonArrayConst daily = root["daily"].as<JsonArrayConst>();
+  for (JsonObjectConst item : daily) {
     if (weather.dailyCount >= HubWeather::MaxDaily) {
       break;
     }
@@ -490,16 +499,12 @@ HubRequestResult HubService::fetchWeather() {
   }
 
   weather.valid = weather.condition.length() > 0 || weather.hourlyCount > 0 || weather.dailyCount > 0;
-  result.ok = weather.valid;
-  if (result.ok) {
-    weather_ = weather;
-  }
-  return result;
+  return weather.valid;
 }
 
 HubRequestResult HubService::fetchTodos() {
   jsonDoc_.clear();
-  HubRequestResult result = getJson("/todos", jsonDoc_, "todos");
+  HubRequestResult result = getJson(AuthMode::Device, "/device/todos", jsonDoc_, "todos");
   if (!result.ok) {
     return result;
   }
@@ -536,73 +541,50 @@ HubRequestResult HubService::fetchTodos() {
   return result;
 }
 
-HubRequestResult HubService::patchTodoStatus(HubTodo& todo) {
-  char path[32];
-  char body[48];
-  snprintf(path, sizeof(path), "/todos/%d", todo.id);
-  const int bodyLen = snprintf(body,
-                               sizeof(body),
-                               "{\"version\":%d,\"status\":%d}",
-                               todo.version,
-                               todo.status);
-  if (bodyLen < 0 || bodyLen >= static_cast<int>(sizeof(body))) {
+bool HubService::parseMessage(JsonObjectConst item, HubMessage& out) const {
+  out = {};
+  out.id = item["id"] | 0;
+  out.channel = item["device_id"] | "";
+  out.author = item["author_id"] | "anonymous";
+  out.body = item["body"] | "";
+  out.createdAt = item["created_at"] | "";
+  return out.id > 0 && out.body.length() > 0;
+}
+
+HubRequestResult HubService::ackMessages(const int* ids, size_t count) {
+  if (!ids || count == 0) {
+    return {};
+  }
+
+  char body[160];
+  int bodyLen = snprintf(body, sizeof(body), "{\"message_ids\":[");
+  for (size_t i = 0; i < count; ++i) {
+    const int written = snprintf(body + bodyLen,
+                                 sizeof(body) - bodyLen,
+                                 "%s%d",
+                                 i == 0 ? "" : ",",
+                                 ids[i]);
+    if (written < 0 || bodyLen + written >= static_cast<int>(sizeof(body))) {
+      bodyLen = -1;
+      break;
+    }
+    bodyLen += written;
+  }
+  if (bodyLen >= 0) {
+    const int written = snprintf(body + bodyLen, sizeof(body) - bodyLen, "]}");
+    if (written < 0 || bodyLen + written >= static_cast<int>(sizeof(body))) {
+      bodyLen = -1;
+    } else {
+      bodyLen += written;
+    }
+  }
+
+  if (bodyLen < 0) {
     HubRequestResult result;
     result.attempted = true;
     return result;
   }
-
-  responseDoc_.clear();
-  HubRequestResult result = patchJson(path, body, static_cast<size_t>(bodyLen), &responseDoc_, "todo patch");
-  if (result.ok) {
-    todo.version = responseDoc_["version"] | todo.version;
-    todo.updatedAt = responseDoc_["updated_at"] | todo.updatedAt;
-    todo.dirty = false;
-  }
-  return result;
-}
-
-HubRequestResult HubService::deleteTodoByVersion(int id, int version) {
-  char path[32];
-  char body[32];
-  snprintf(path, sizeof(path), "/todos/%d", id);
-  const int bodyLen = snprintf(body, sizeof(body), "{\"version\":%d}", version);
-  if (bodyLen < 0 || bodyLen >= static_cast<int>(sizeof(body))) {
-    HubRequestResult result;
-    result.attempted = true;
-    return result;
-  }
-  return deleteJson(path, body, static_cast<size_t>(bodyLen), "todo delete");
-}
-
-HubRequestResult HubService::fetchMessage(int id, HubMessage& out) {
-  char path[32];
-  snprintf(path, sizeof(path), "/messages/%d", id);
-  jsonDoc_.clear();
-  HubRequestResult result = getJson(path, jsonDoc_, "message");
-  if (!result.ok) {
-    return result;
-  }
-
-  out.id = jsonDoc_["id"] | id;
-  out.channel = jsonDoc_["channel"] | "";
-  out.author = jsonDoc_["author"] | "anonymous";
-  out.body = jsonDoc_["body"] | "";
-  out.createdAt = jsonDoc_["created_at"] | "";
-  result.ok = out.id > 0 && out.body.length() > 0;
-  return result;
-}
-
-HubRequestResult HubService::ackMessage(int id) {
-  char path[40];
-  char body[96];
-  snprintf(path, sizeof(path), "/messages/%d/ack", id);
-  const int bodyLen = snprintf(body, sizeof(body), "{\"device_id\":\"%s\"}", deviceId_.c_str());
-  if (bodyLen < 0 || bodyLen >= static_cast<int>(sizeof(body))) {
-    HubRequestResult result;
-    result.attempted = true;
-    return result;
-  }
-  return postJson(path, body, static_cast<size_t>(bodyLen), "message ack");
+  return postJson(AuthMode::Device, "/device/messages/ack", body, static_cast<size_t>(bodyLen), nullptr, "message ack");
 }
 
 void HubService::storeMessage(const HubMessage& message) {
@@ -626,27 +608,21 @@ bool HubService::hasMessage(int id) const {
   return false;
 }
 
-HubRequestResult HubService::postJson(const char* path, const char* body, size_t bodyLen, const char* label) {
-  return requestJson("POST", path, body, bodyLen, nullptr, label);
+HubRequestResult HubService::postJson(AuthMode auth,
+                                      const char* path,
+                                      const char* body,
+                                      size_t bodyLen,
+                                      JsonDocument* response,
+                                      const char* label) {
+  return requestJson("POST", auth, path, body, bodyLen, response, label);
 }
 
-HubRequestResult HubService::patchJson(const char* path,
-                                       const char* body,
-                                       size_t bodyLen,
-                                       JsonDocument* response,
-                                       const char* label) {
-  return requestJson("PATCH", path, body, bodyLen, response, label);
-}
-
-HubRequestResult HubService::deleteJson(const char* path, const char* body, size_t bodyLen, const char* label) {
-  return requestJson("DELETE", path, body, bodyLen, nullptr, label);
-}
-
-HubRequestResult HubService::getJson(const char* path, JsonDocument& doc, const char* label) {
-  return requestJson("GET", path, nullptr, 0, &doc, label);
+HubRequestResult HubService::getJson(AuthMode auth, const char* path, JsonDocument& doc, const char* label) {
+  return requestJson("GET", auth, path, nullptr, 0, &doc, label);
 }
 
 HubRequestResult HubService::requestJson(const char* method,
+                                         AuthMode auth,
                                          const char* path,
                                          const char* body,
                                          size_t bodyLen,
@@ -673,11 +649,15 @@ HubRequestResult HubService::requestJson(const char* method,
     return result;
   }
 
-  String auth;
-  auth.reserve(apiKey_.length() + 8);
-  auth = "Bearer ";
-  auth += apiKey_;
-  http.addHeader("Authorization", auth);
+  if (auth == AuthMode::Device) {
+    http.addHeader("X-Device-ID", deviceId_);
+    http.addHeader("X-Device-Secret", deviceSecret_);
+  } else {
+    http.addHeader("X-Device-ID", deviceId_);
+    if (hasUsableSecret(deviceSecret_)) {
+      http.addHeader("X-Device-Secret", deviceSecret_);
+    }
+  }
   if (body) {
     http.addHeader("Content-Type", "application/json");
   }

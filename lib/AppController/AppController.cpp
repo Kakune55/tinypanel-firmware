@@ -27,6 +27,7 @@ constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
 constexpr float kTemperatureDirtyDelta = 0.1f;
 constexpr float kHumidityDirtyDelta = 0.5f;
+constexpr float kBatteryFullHoldPercent = 99.5f;
 
 bool batteryDisplayChanged(const BatteryStatus& before, const BatteryStatus& after) {
   return before.percent != after.percent ||
@@ -46,6 +47,36 @@ bool environmentDisplayChanged(const Shtc3Reading& before, const Shtc3Reading& a
   }
   return std::fabs(before.temperatureC - after.temperatureC) >= kTemperatureDirtyDelta ||
          std::fabs(before.humidityRh - after.humidityRh) >= kHumidityDirtyDelta;
+}
+
+bool batteryInFullHold(const BatteryStatus& battery) {
+  return battery.charging || battery.percentFloat >= kBatteryFullHoldPercent;
+}
+
+bool leapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+uint16_t daysBeforeMonth(int year, int month) {
+  static constexpr uint16_t kDays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+  if (month < 1 || month > 12) {
+    return 0;
+  }
+  return kDays[month - 1] + ((month > 2 && leapYear(year)) ? 1 : 0);
+}
+
+uint32_t absoluteMinute(const RtcDateTime& dt, uint32_t fallbackUptimeMs) {
+  if (!dt.valid || dt.year < 2000) {
+    return fallbackUptimeMs / 60000UL;
+  }
+
+  uint32_t days = 0;
+  for (int year = 2000; year < dt.year; ++year) {
+    days += leapYear(year) ? 366UL : 365UL;
+  }
+  days += daysBeforeMonth(dt.year, dt.month);
+  days += static_cast<uint32_t>(dt.day > 0 ? dt.day - 1 : 0);
+  return days * 1440UL + static_cast<uint32_t>(dt.hour) * 60UL + dt.minute;
 }
 
 }  // namespace
@@ -382,6 +413,11 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.ntpSyncFailed = state_.ntpSyncFailed;
   model.hubSyncing = hub_.isSyncing();
   model.hubSyncFailed = hub_.hasFailed();
+  model.hubConfigured = hub_.isConfigured();
+  model.hubBound = hub_.isBound();
+  model.hubDeviceId = hub_.deviceId();
+  model.hubBindCode = hub_.bindCode();
+  model.hubDeviceName = hub_.deviceName();
   model.sdMounted = state_.sdMounted;
   model.sdStatus = sdCard_.lastErrorText();
   model.storageReady = storage_.isReady();
@@ -534,7 +570,7 @@ bool AppController::runNextScheduledTask() {
       return true;
     case State::ScheduledTaskStep::Messages:
       pollHubMessages(state_.scheduledTaskForce);
-      state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Todos;
       return true;
     case State::ScheduledTaskStep::TodoSync: {
       HubRequestResult todoSync = hub_.syncTodoChanges(wifi_.isConnected(), handleHubStateChanged);
@@ -694,6 +730,7 @@ void AppController::resetBatteryWindow() {
   appendBatteryChartSample(state_.battery);
   markUiDirty();
 }
+
 
 HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {
   HubTelemetrySnapshot snapshot;
