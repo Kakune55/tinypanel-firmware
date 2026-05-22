@@ -666,7 +666,7 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     constexpr int rowY = detailY + 58;
     constexpr int rowW = detailW;
     constexpr int rowGap = 30;
-    constexpr uint8_t actionCount = 6;
+    constexpr uint8_t actionCount = 7;
     constexpr uint8_t pageSize = 5;
     const uint8_t action = min(model.selectedSystemAction, static_cast<uint8_t>(actionCount - 1));
     const uint8_t page = action / pageSize;
@@ -698,6 +698,7 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
       "CLEAR MSG",
       "RESET BAT",
       "RE-PAIR",
+      "CANVAS",
       "BACK",
     };
     const char* actionNotes[actionCount] = {
@@ -706,6 +707,7 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
       clearNote,
       "new ETA window",
       "clear secret + hello",
+      "serial drawing mode",
       "leave action mode",
     };
 

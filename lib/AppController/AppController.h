@@ -143,6 +143,12 @@ class AppController {
     bool scheduledTaskTodoSyncOk = true;
     uint32_t lastActivityMs = 0;
     uint8_t currentCpuMhz = 0;
+    bool serialCanvasMode = false;
+    bool serialCanvasFlushPending = false;
+    uint32_t lastSerialCanvasFlushMs = 0;
+    uint32_t lastSerialCanvasInputMs = 0;
+    char serialCanvasLine[192] = {};
+    size_t serialCanvasLineLen = 0;
   };
 
   static void handleHubStateChanged();
@@ -178,6 +184,12 @@ class AppController {
   void handleSystemWifiToggle();
   void handleSystemResetBattery();
   void handleSystemRePair();
+  void enterSerialCanvasMode();
+  void exitSerialCanvasMode();
+  void handleSerialCanvasMode();
+  void processSerialCanvasInput();
+  void processSerialCanvasLine(char* line);
+  void requestSerialCanvasFlush(bool force = false);
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();

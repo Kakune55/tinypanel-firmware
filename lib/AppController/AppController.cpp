@@ -4,6 +4,9 @@
 #include "Utf8Text.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
 
 #include "esp_sleep.h"
 
@@ -21,9 +24,11 @@ constexpr uint8_t kSystemActionSyncNow = 1;
 constexpr uint8_t kSystemActionClearMessages = 2;
 constexpr uint8_t kSystemActionResetBattery = 3;
 constexpr uint8_t kSystemActionRePair = 4;
-constexpr uint8_t kSystemActionBack = 5;
-constexpr uint8_t kSystemActionCount = 6;
+constexpr uint8_t kSystemActionCanvas = 5;
+constexpr uint8_t kSystemActionBack = 6;
+constexpr uint8_t kSystemActionCount = 7;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
+constexpr uint32_t kSerialCanvasIdleFlushMs = 60;
 constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
 constexpr float kTemperatureDirtyDelta = 0.1f;
@@ -52,6 +57,34 @@ bool environmentDisplayChanged(const Shtc3Reading& before, const Shtc3Reading& a
 
 bool batteryInFullHold(const BatteryStatus& battery) {
   return battery.charging || battery.percentFloat >= kBatteryFullHoldPercent;
+}
+
+bool parseCanvasColor(const char* token, bool& black) {
+  if (token == nullptr) {
+    return false;
+  }
+  if (strcmp(token, "1") == 0 || strcasecmp(token, "B") == 0 || strcasecmp(token, "BLACK") == 0) {
+    black = true;
+    return true;
+  }
+  if (strcmp(token, "0") == 0 || strcasecmp(token, "W") == 0 || strcasecmp(token, "WHITE") == 0) {
+    black = false;
+    return true;
+  }
+  return false;
+}
+
+bool parseCanvasInt(const char* token, int& value) {
+  if (token == nullptr || *token == '\0') {
+    return false;
+  }
+  char* end = nullptr;
+  const long parsed = strtol(token, &end, 10);
+  if (end == token || *end != '\0') {
+    return false;
+  }
+  value = static_cast<int>(parsed);
+  return true;
 }
 
 bool leapYear(int year) {
@@ -325,6 +358,12 @@ void AppController::loopOnce() {
     state_.lastActivityMs = millis();
   }
   updateCpuFrequency();
+  if (state_.serialCanvasMode) {
+    handleSerialCanvasMode();
+    updateCpuFrequency();
+    delay(1);
+    return;
+  }
   handleButtons();
   handleMessageDeleteHold();
   handlePendingKeyClick();
@@ -992,6 +1031,258 @@ void AppController::handleSystemRePair() {
   markUiDirty();
 }
 
+void AppController::enterSerialCanvasMode() {
+  state_.serialCanvasMode = true;
+  state_.serialCanvasFlushPending = false;
+  state_.serialCanvasLineLen = 0;
+  state_.lastSerialCanvasFlushMs = 0;
+  state_.lastSerialCanvasInputMs = millis();
+  state_.pendingKeyClick = false;
+  state_.systemActionFocused = false;
+  state_.uiDirty = false;
+  noteActivity();
+
+  display_.clear(true);
+  display_.drawText(22, 48, "SERIAL CANVAS", true, 3);
+  display_.drawText(24, 96, "Send drawing commands over USB CDC", true, 1);
+  display_.drawText(24, 116, "HELP for protocol", true, 1);
+  display_.drawText(24, 136, "EXIT or long key to leave", true, 1);
+  display_.drawText(24, 170, "Default flush limit: 5 Hz", true, 1);
+  requestSerialCanvasFlush(true);
+
+  Serial.println("CANVAS READY TPD1");
+  Serial.println("CANVAS HELP: CLEAR|PX|LINE|RECT|FILL|CIRCLE|TEXT|FLUSH|EXIT");
+}
+
+void AppController::exitSerialCanvasMode() {
+  if (!state_.serialCanvasMode) {
+    return;
+  }
+
+  state_.serialCanvasMode = false;
+  state_.serialCanvasFlushPending = false;
+  state_.serialCanvasLineLen = 0;
+  state_.pendingKeyClick = false;
+  markUiDirty();
+  renderUi();
+  Serial.println("CANVAS EXIT");
+}
+
+void AppController::handleSerialCanvasMode() {
+  keyButton_.update();
+  bootButton_.update();
+
+  if (keyButton_.consumeReleased() || bootButton_.consumeReleased()) {
+    noteActivity();
+    const bool keyLongPress = keyButton_.lastPressDurationMs() >= config_.keyLongPressMs;
+    const bool bootLongPress = bootButton_.lastPressDurationMs() >= config_.keyLongPressMs;
+    if (keyLongPress || bootLongPress) {
+      exitSerialCanvasMode();
+      return;
+    }
+  }
+
+  processSerialCanvasInput();
+  if (state_.serialCanvasFlushPending &&
+      millis() - state_.lastSerialCanvasInputMs >= kSerialCanvasIdleFlushMs) {
+    requestSerialCanvasFlush(true);
+  }
+}
+
+void AppController::processSerialCanvasInput() {
+  while (Serial.available() > 0) {
+    state_.lastSerialCanvasInputMs = millis();
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '\n') {
+      state_.serialCanvasLine[state_.serialCanvasLineLen] = '\0';
+      if (state_.serialCanvasLineLen > 0) {
+        processSerialCanvasLine(state_.serialCanvasLine);
+      }
+      state_.serialCanvasLineLen = 0;
+      if (!state_.serialCanvasMode) {
+        return;
+      }
+      continue;
+    }
+    if (state_.serialCanvasLineLen + 1 >= sizeof(state_.serialCanvasLine)) {
+      state_.serialCanvasLineLen = 0;
+      Serial.println("CANVAS ERR line-too-long");
+      continue;
+    }
+    state_.serialCanvasLine[state_.serialCanvasLineLen++] = ch;
+  }
+}
+
+void AppController::processSerialCanvasLine(char* line) {
+  while (*line == ' ' || *line == '\t') {
+    ++line;
+  }
+  if (*line == '\0' || *line == '#') {
+    return;
+  }
+
+  char* save = nullptr;
+  char* command = strtok_r(line, " \t", &save);
+  if (command == nullptr) {
+    return;
+  }
+
+  if (strcasecmp(command, "HELP") == 0) {
+    Serial.println("CANVAS CMDS:");
+    Serial.println("CLEAR W|B");
+    Serial.println("PX x y color");
+    Serial.println("LINE x0 y0 x1 y1 color");
+    Serial.println("RECT x y w h color");
+    Serial.println("FILL x y w h color");
+    Serial.println("CIRCLE x y r color");
+    Serial.println("TEXT x y scale color text");
+    Serial.println("FLUSH");
+    Serial.println("EXIT");
+    return;
+  }
+
+  if (strcasecmp(command, "PING") == 0) {
+    Serial.println("CANVAS PONG");
+    display_.fillRect(300, 260, 72, 18, false);
+    display_.drawText(304, 264, "PING", true, 1);
+    requestSerialCanvasFlush(true);
+    return;
+  }
+
+  if (strcasecmp(command, "EXIT") == 0) {
+    exitSerialCanvasMode();
+    return;
+  }
+
+  if (strcasecmp(command, "FLUSH") == 0) {
+    requestSerialCanvasFlush(true);
+    return;
+  }
+
+  if (strcasecmp(command, "CLEAR") == 0) {
+    bool black = false;
+    const char* colorToken = strtok_r(nullptr, " \t", &save);
+    if (colorToken != nullptr && !parseCanvasColor(colorToken, black)) {
+      Serial.println("CANVAS ERR clear-color");
+      return;
+    }
+    display_.clear(!black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  int values[5] = {};
+  bool black = true;
+
+  if (strcasecmp(command, "PX") == 0 || strcasecmp(command, "PIXEL") == 0) {
+    for (uint8_t i = 0; i < 2; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR pixel-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR pixel-color");
+      return;
+    }
+    display_.setPixel(values[0], values[1], black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "LINE") == 0) {
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR line-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR line-color");
+      return;
+    }
+    display_.drawLine(values[0], values[1], values[2], values[3], black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "RECT") == 0 || strcasecmp(command, "FILL") == 0) {
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR rect-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR rect-color");
+      return;
+    }
+    if (strcasecmp(command, "FILL") == 0) {
+      display_.fillRect(values[0], values[1], values[2], values[3], black);
+    } else {
+      display_.drawRect(values[0], values[1], values[2], values[3], black);
+    }
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "CIRCLE") == 0) {
+    for (uint8_t i = 0; i < 3; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR circle-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR circle-color");
+      return;
+    }
+    display_.drawCircle(values[0], values[1], values[2], black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "TEXT") == 0) {
+    for (uint8_t i = 0; i < 3; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR text-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR text-color");
+      return;
+    }
+    if (save == nullptr) {
+      Serial.println("CANVAS ERR text-body");
+      return;
+    }
+    while (*save == ' ' || *save == '\t') {
+      ++save;
+    }
+    display_.drawText(values[0], values[1], save, black, values[2]);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  Serial.println("CANVAS ERR unknown-command");
+}
+
+void AppController::requestSerialCanvasFlush(bool force) {
+  const uint32_t now = millis();
+  if (!force) {
+    state_.serialCanvasFlushPending = true;
+    return;
+  }
+
+  display_.flushFull();
+  state_.lastSerialCanvasFlushMs = now;
+  state_.serialCanvasFlushPending = false;
+}
+
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
@@ -1107,6 +1398,11 @@ void AppController::handleButtons() {
         if (state_.selectedSystemAction == kSystemActionRePair) {
           Serial.println("KEY: re-pair");
           handleSystemRePair();
+          return;
+        }
+        if (state_.selectedSystemAction == kSystemActionCanvas) {
+          Serial.println("KEY: serial canvas");
+          enterSerialCanvasMode();
           return;
         }
         if (state_.selectedSystemAction == kSystemActionBack) {
