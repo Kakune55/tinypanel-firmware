@@ -4,6 +4,9 @@
 #include "Utf8Text.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
 
 #include "esp_sleep.h"
 
@@ -20,9 +23,12 @@ constexpr uint8_t kSystemActionWifiToggle = 0;
 constexpr uint8_t kSystemActionSyncNow = 1;
 constexpr uint8_t kSystemActionClearMessages = 2;
 constexpr uint8_t kSystemActionResetBattery = 3;
-constexpr uint8_t kSystemActionBack = 4;
-constexpr uint8_t kSystemActionCount = 5;
+constexpr uint8_t kSystemActionRePair = 4;
+constexpr uint8_t kSystemActionCanvas = 5;
+constexpr uint8_t kSystemActionBack = 6;
+constexpr uint8_t kSystemActionCount = 7;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
+constexpr uint32_t kSerialCanvasIdleFlushMs = 60;
 constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
 constexpr float kTemperatureDirtyDelta = 0.1f;
@@ -51,6 +57,34 @@ bool environmentDisplayChanged(const Shtc3Reading& before, const Shtc3Reading& a
 
 bool batteryInFullHold(const BatteryStatus& battery) {
   return battery.charging || battery.percentFloat >= kBatteryFullHoldPercent;
+}
+
+bool parseCanvasColor(const char* token, bool& black) {
+  if (token == nullptr) {
+    return false;
+  }
+  if (strcmp(token, "1") == 0 || strcasecmp(token, "B") == 0 || strcasecmp(token, "BLACK") == 0) {
+    black = true;
+    return true;
+  }
+  if (strcmp(token, "0") == 0 || strcasecmp(token, "W") == 0 || strcasecmp(token, "WHITE") == 0) {
+    black = false;
+    return true;
+  }
+  return false;
+}
+
+bool parseCanvasInt(const char* token, int& value) {
+  if (token == nullptr || *token == '\0') {
+    return false;
+  }
+  char* end = nullptr;
+  const long parsed = strtol(token, &end, 10);
+  if (end == token || *end != '\0') {
+    return false;
+  }
+  value = static_cast<int>(parsed);
+  return true;
 }
 
 bool leapYear(int year) {
@@ -149,7 +183,7 @@ bool AppController::ntpSynced() const {
 void AppController::readSensors(bool force) {
   const BatteryStatus previousBattery = state_.battery;
   const Shtc3Reading previousEnvironment = state_.environment;
-  const int previousEtaMinutes = state_.batteryEtaMinutes;
+  const int previousEtaMinutes = batteryRuntime_.etaMinutes();
 
   BatteryStatus nextBattery = battery_.readStatus();
   Shtc3Reading nextEnvironment;
@@ -157,7 +191,7 @@ void AppController::readSensors(bool force) {
   state_.battery = nextBattery;
   state_.environment = nextEnvironment;
   readRtc(force);
-  updateBatteryRuntimeEstimate();
+  batteryRuntime_.updateEstimate(state_.battery, millis() / 1000UL, config_.batteryLogIntervalMs);
 
   const uint32_t nowMs = millis();
   if (verifySdMounted() && storage_.isReady() &&
@@ -173,7 +207,7 @@ void AppController::readSensors(bool force) {
   if (force ||
       batteryDisplayChanged(previousBattery, state_.battery) ||
       environmentDisplayChanged(previousEnvironment, state_.environment) ||
-      previousEtaMinutes != state_.batteryEtaMinutes) {
+      previousEtaMinutes != batteryRuntime_.etaMinutes()) {
     markUiDirty();
   }
 }
@@ -315,25 +349,7 @@ void AppController::restoreBatteryHistoryFromStorage() {
     return;
   }
 
-  state_.batteryChartCount = 0;
-  state_.batteryChartStartMinute = points[0].absoluteMinute;
-  state_.batteryChartLastAbsoluteMinute = 0;
-  for (size_t i = 0; i < count; ++i) {
-    if (points[i].charging || points[i].absoluteMinute < state_.batteryChartStartMinute) {
-      continue;
-    }
-    const uint32_t elapsed = points[i].absoluteMinute - state_.batteryChartStartMinute;
-    if (elapsed > UINT16_MAX) {
-      continue;
-    }
-    const size_t index = state_.batteryChartCount++;
-    state_.batteryChart[index].minute = static_cast<uint16_t>(elapsed);
-    state_.batteryChart[index].percent = static_cast<uint8_t>(constrain(static_cast<int>(points[i].percent + 0.5f), 0, 100));
-    state_.batteryChartLastAbsoluteMinute = points[i].absoluteMinute;
-    if (state_.batteryChartCount >= State::BatteryChartSize) {
-      break;
-    }
-  }
+  batteryRuntime_.restoreChart(points, count);
   markUiDirty();
 }
 
@@ -342,6 +358,12 @@ void AppController::loopOnce() {
     state_.lastActivityMs = millis();
   }
   updateCpuFrequency();
+  if (state_.serialCanvasMode) {
+    handleSerialCanvasMode();
+    updateCpuFrequency();
+    delay(1);
+    return;
+  }
   handleButtons();
   handleMessageDeleteHold();
   handlePendingKeyClick();
@@ -463,8 +485,8 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.freePsram = ESP.getFreePsram();
   model.psramSize = ESP.getPsramSize();
   model.cpuMhz = getCpuFrequencyMhz();
-  model.batteryEtaMinutes = state_.batteryEtaMinutes;
-  rebuildBatteryChartPrediction(model);
+  model.batteryEtaMinutes = batteryRuntime_.etaMinutes();
+  batteryRuntime_.fillUiModel(model);
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
       state_.newMessageAlert && ((millis() / config_.newMessageBlinkMs) % 2 == 1);
@@ -726,193 +748,14 @@ void AppController::updateSelectedTodoAfterChange() {
   }
 }
 
-void AppController::updateBatteryRuntimeEstimate() {
-  const uint32_t nowS = millis() / 1000UL;
-  constexpr float kFilterAlpha = 0.18f;
-  constexpr float kEtaSmoothingAlpha = 0.25f;
-  constexpr float kMaxSingleSampleDropPercent = 3.0f;
-  constexpr float kMaxSingleSampleRisePercent = 1.0f;
-  constexpr float kMaxDischargeRecoveryPercent = 0.12f;
-  constexpr float kMinSlopePercentPerHour = 0.25f;
-  constexpr float kMaxSlopePercentPerHour = 30.0f;
-  constexpr uint32_t kMinBootAgeS = 20UL * 60UL;
-  constexpr uint32_t kMinElapsedS = 35UL * 60UL;
-  constexpr size_t kMinSamples = 8;
-  constexpr float kMinEstimatedDropPercent = 1.0f;
-
-  if (batteryInFullHold(state_.battery) || state_.battery.percentFloat <= 0.0f) {
-    state_.batteryHistoryCount = 0;
-    state_.batteryHistoryNext = 0;
-    state_.hasBatteryEtaFilter = false;
-    state_.hasBatteryEtaEstimate = false;
-    state_.lastBatteryEtaSampleS = 0;
-    state_.batteryEtaMinutes = -1;
-    state_.batteryEtaWasCharging = batteryInFullHold(state_.battery);
-    return;
-  }
-
-  if (state_.batteryEtaWasCharging) {
-    state_.batteryHistoryCount = 0;
-    state_.batteryHistoryNext = 0;
-    state_.hasBatteryEtaFilter = false;
-    state_.hasBatteryEtaEstimate = false;
-    state_.lastBatteryEtaSampleS = 0;
-    state_.batteryEtaMinutes = -1;
-    state_.batteryEtaWasCharging = false;
-  }
-
-  if (nowS < kMinBootAgeS) {
-    return;
-  }
-
-  float filteredPercent = state_.battery.percentFloat;
-  if (state_.hasBatteryEtaFilter) {
-    filteredPercent = state_.batteryEtaFilteredPercent +
-                      kFilterAlpha * (state_.battery.percentFloat - state_.batteryEtaFilteredPercent);
-    if (filteredPercent > state_.batteryEtaFilteredPercent + kMaxDischargeRecoveryPercent) {
-      filteredPercent = state_.batteryEtaFilteredPercent + kMaxDischargeRecoveryPercent;
-    }
-  } else {
-    state_.hasBatteryEtaFilter = true;
-  }
-
-  filteredPercent = constrain(filteredPercent, 0.0f, 100.0f);
-  if (state_.batteryHistoryCount > 0) {
-    const State::BatteryHistoryPoint& previous =
-        state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
-    const float sampleDelta = filteredPercent - previous.percent;
-    if (-sampleDelta > kMaxSingleSampleDropPercent || sampleDelta > kMaxSingleSampleRisePercent) {
-      return;
-    }
-  }
-  state_.batteryEtaFilteredPercent = filteredPercent;
-
-  const uint32_t minSampleIntervalS = max<uint32_t>(1, config_.batteryLogIntervalMs / 1000UL);
-  if (state_.lastBatteryEtaSampleS != 0 && nowS - state_.lastBatteryEtaSampleS < minSampleIntervalS) {
-    return;
-  }
-  state_.lastBatteryEtaSampleS = nowS;
-
-  state_.batteryHistory[state_.batteryHistoryNext].uptimeS = nowS;
-  state_.batteryHistory[state_.batteryHistoryNext].percent = filteredPercent;
-  state_.batteryHistoryNext = (state_.batteryHistoryNext + 1) % State::BatteryHistorySize;
-  if (state_.batteryHistoryCount < State::BatteryHistorySize) {
-    ++state_.batteryHistoryCount;
-  }
-
-  if (state_.batteryHistoryCount < kMinSamples) {
-    return;
-  }
-
-  const size_t oldestIndex =
-      state_.batteryHistoryCount < State::BatteryHistorySize ? 0 : state_.batteryHistoryNext;
-  const State::BatteryHistoryPoint& oldest = state_.batteryHistory[oldestIndex];
-  const State::BatteryHistoryPoint& newest =
-      state_.batteryHistory[(state_.batteryHistoryNext + State::BatteryHistorySize - 1) % State::BatteryHistorySize];
-
-  const uint32_t elapsedS = newest.uptimeS - oldest.uptimeS;
-  if (elapsedS < kMinElapsedS) {
-    return;
-  }
-
-  double sumT = 0.0;
-  double sumP = 0.0;
-  double sumTT = 0.0;
-  double sumTP = 0.0;
-  for (size_t i = 0; i < state_.batteryHistoryCount; ++i) {
-    const size_t index = (oldestIndex + i) % State::BatteryHistorySize;
-    const double t = static_cast<double>(state_.batteryHistory[index].uptimeS - oldest.uptimeS);
-    const double p = static_cast<double>(state_.batteryHistory[index].percent);
-    sumT += t;
-    sumP += p;
-    sumTT += t * t;
-    sumTP += t * p;
-  }
-
-  const double n = static_cast<double>(state_.batteryHistoryCount);
-  const double denominator = n * sumTT - sumT * sumT;
-  if (denominator <= 0.0) {
-    return;
-  }
-
-  const double slopePercentPerSecond = (n * sumTP - sumT * sumP) / denominator;
-  const float dischargePercentPerHour = static_cast<float>(-slopePercentPerSecond * 3600.0);
-  const float estimatedDropPercent = dischargePercentPerHour * elapsedS / 3600.0f;
-  if (dischargePercentPerHour < kMinSlopePercentPerHour ||
-      dischargePercentPerHour > kMaxSlopePercentPerHour ||
-      estimatedDropPercent < kMinEstimatedDropPercent) {
-    return;
-  }
-
-  const float etaMinutes = newest.percent / dischargePercentPerHour * 60.0f;
-  if (etaMinutes > 0.0f && etaMinutes < 10000.0f) {
-    if (state_.hasBatteryEtaEstimate && state_.batteryEtaMinutes >= 0) {
-      const float smoothedEta = state_.batteryEtaMinutes +
-                                kEtaSmoothingAlpha * (etaMinutes - static_cast<float>(state_.batteryEtaMinutes));
-      state_.batteryEtaMinutes = static_cast<int>(smoothedEta + 0.5f);
-    } else {
-      state_.batteryEtaMinutes = static_cast<int>(etaMinutes + 0.5f);
-      state_.hasBatteryEtaEstimate = true;
-    }
-  }
-}
-
 void AppController::appendBatteryChartSample(const BatteryStatus& battery) {
-  const uint32_t nowMinute = absoluteMinute(state_.now, millis());
-  const uint32_t minIntervalMinutes = max<uint32_t>(1, config_.batteryLogIntervalMs / 60000UL);
-
-  if (batteryInFullHold(battery)) {
-    state_.batteryChartCount = 0;
-    state_.batteryChartStartMinute = 0;
-    state_.batteryChartLastAbsoluteMinute = nowMinute;
+  if (batteryRuntime_.appendChartSample(battery, state_.now, millis(), config_.batteryLogIntervalMs)) {
     markUiDirty();
-    return;
   }
-
-  if (state_.batteryChartCount > 0 &&
-      nowMinute - state_.batteryChartLastAbsoluteMinute < minIntervalMinutes) {
-    return;
-  }
-
-  if (state_.batteryChartStartMinute == 0 || nowMinute < state_.batteryChartStartMinute) {
-    state_.batteryChartStartMinute = nowMinute;
-    state_.batteryChartCount = 0;
-  }
-
-  const uint32_t elapsed = nowMinute - state_.batteryChartStartMinute;
-  if (elapsed > UINT16_MAX) {
-    return;
-  }
-
-  if (state_.batteryChartCount >= State::BatteryChartSize) {
-    const uint32_t removedMinutes = state_.batteryChart[1].minute;
-    for (size_t i = 1; i < state_.batteryChartCount; ++i) {
-      state_.batteryChart[i - 1] = state_.batteryChart[i];
-      state_.batteryChart[i - 1].minute -= removedMinutes;
-    }
-    state_.batteryChartStartMinute += removedMinutes;
-    --state_.batteryChartCount;
-  }
-
-  const size_t index = state_.batteryChartCount++;
-  state_.batteryChart[index].minute = static_cast<uint16_t>(elapsed);
-  state_.batteryChart[index].percent = static_cast<uint8_t>(constrain(static_cast<int>(battery.percentFloat + 0.5f), 0, 100));
-  state_.batteryChartLastAbsoluteMinute = nowMinute;
-  markUiDirty();
 }
 
 void AppController::resetBatteryWindow() {
-  state_.batteryHistoryCount = 0;
-  state_.batteryHistoryNext = 0;
-  state_.hasBatteryEtaFilter = false;
-  state_.hasBatteryEtaEstimate = false;
-  state_.batteryEtaWasCharging = state_.battery.charging;
-  state_.batteryEtaFilteredPercent = 0.0f;
-  state_.lastBatteryEtaSampleS = 0;
-  state_.batteryEtaMinutes = -1;
-  state_.batteryChartCount = 0;
-  state_.batteryChartStartMinute = 0;
-  state_.batteryChartLastAbsoluteMinute = 0;
+  batteryRuntime_.reset(state_.battery.charging);
 
   if (verifySdMounted() && storage_.isReady()) {
     BatteryStatus resetMarker = state_.battery;
@@ -928,21 +771,6 @@ void AppController::resetBatteryWindow() {
   markUiDirty();
 }
 
-void AppController::rebuildBatteryChartPrediction(DesktopClockUiModel& model) const {
-  if (state_.batteryChartCount == 0) {
-    return;
-  }
-
-  model.batteryChart = state_.batteryChart;
-  model.batteryChartCount = state_.batteryChartCount;
-  model.batteryChartNowMinute = state_.batteryChart[state_.batteryChartCount - 1].minute;
-  model.batteryChartPredictedZeroMinute = model.batteryChartNowMinute;
-  if (state_.batteryEtaMinutes > 0) {
-    const uint32_t predicted = static_cast<uint32_t>(model.batteryChartNowMinute) +
-                               static_cast<uint32_t>(state_.batteryEtaMinutes);
-    model.batteryChartPredictedZeroMinute = static_cast<uint16_t>(min<uint32_t>(UINT16_MAX, predicted));
-  }
-}
 
 HubTelemetrySnapshot AppController::buildHubTelemetrySnapshot() const {
   HubTelemetrySnapshot snapshot;
@@ -1173,6 +1001,288 @@ void AppController::handleSystemResetBattery() {
   Serial.println("KEY: reset battery window");
 }
 
+void AppController::handleSystemRePair() {
+  hub_.setDeviceSecret("");
+  hub_.setDeviceBinding(false, "", "");
+
+  if (storage_.isReady()) {
+    StoredHubCredentials cleared;
+    storage_.saveHubCredentials(cleared);
+  }
+
+  markUiDirty();
+  if (!wifi_.isConnected()) {
+    Serial.println("KEY: re-pair pending (wifi offline)");
+    return;
+  }
+
+  HubHelloResult hello = hub_.hello(true, handleHubStateChanged);
+  if (hello.attempted && hello.ok) {
+    StoredHubCredentials updated;
+    updated.bound = hello.bound;
+    snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", hello.deviceSecret.c_str());
+    snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", hello.bindCode.c_str());
+    snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", hello.name.c_str());
+    if (storage_.isReady()) {
+      storage_.saveHubCredentials(updated);
+    }
+  }
+
+  markUiDirty();
+}
+
+void AppController::enterSerialCanvasMode() {
+  state_.serialCanvasMode = true;
+  state_.serialCanvasFlushPending = false;
+  state_.serialCanvasLineLen = 0;
+  state_.lastSerialCanvasFlushMs = 0;
+  state_.lastSerialCanvasInputMs = millis();
+  state_.pendingKeyClick = false;
+  state_.systemActionFocused = false;
+  state_.uiDirty = false;
+  noteActivity();
+
+  display_.clear(true);
+  display_.drawText(22, 48, "SERIAL CANVAS", true, 3);
+  display_.drawText(24, 96, "Send drawing commands over USB CDC", true, 1);
+  display_.drawText(24, 116, "HELP for protocol", true, 1);
+  display_.drawText(24, 136, "EXIT or long key to leave", true, 1);
+  display_.drawText(24, 170, "Default flush limit: 5 Hz", true, 1);
+  requestSerialCanvasFlush(true);
+
+  Serial.println("CANVAS READY TPD1");
+  Serial.println("CANVAS HELP: CLEAR|PX|LINE|RECT|FILL|CIRCLE|TEXT|FLUSH|EXIT");
+}
+
+void AppController::exitSerialCanvasMode() {
+  if (!state_.serialCanvasMode) {
+    return;
+  }
+
+  state_.serialCanvasMode = false;
+  state_.serialCanvasFlushPending = false;
+  state_.serialCanvasLineLen = 0;
+  state_.pendingKeyClick = false;
+  markUiDirty();
+  renderUi();
+  Serial.println("CANVAS EXIT");
+}
+
+void AppController::handleSerialCanvasMode() {
+  keyButton_.update();
+  bootButton_.update();
+
+  if (keyButton_.consumeReleased() || bootButton_.consumeReleased()) {
+    noteActivity();
+    const bool keyLongPress = keyButton_.lastPressDurationMs() >= config_.keyLongPressMs;
+    const bool bootLongPress = bootButton_.lastPressDurationMs() >= config_.keyLongPressMs;
+    if (keyLongPress || bootLongPress) {
+      exitSerialCanvasMode();
+      return;
+    }
+  }
+
+  processSerialCanvasInput();
+  if (state_.serialCanvasFlushPending &&
+      millis() - state_.lastSerialCanvasInputMs >= kSerialCanvasIdleFlushMs) {
+    requestSerialCanvasFlush(true);
+  }
+}
+
+void AppController::processSerialCanvasInput() {
+  while (Serial.available() > 0) {
+    state_.lastSerialCanvasInputMs = millis();
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '\n') {
+      state_.serialCanvasLine[state_.serialCanvasLineLen] = '\0';
+      if (state_.serialCanvasLineLen > 0) {
+        processSerialCanvasLine(state_.serialCanvasLine);
+      }
+      state_.serialCanvasLineLen = 0;
+      if (!state_.serialCanvasMode) {
+        return;
+      }
+      continue;
+    }
+    if (state_.serialCanvasLineLen + 1 >= sizeof(state_.serialCanvasLine)) {
+      state_.serialCanvasLineLen = 0;
+      Serial.println("CANVAS ERR line-too-long");
+      continue;
+    }
+    state_.serialCanvasLine[state_.serialCanvasLineLen++] = ch;
+  }
+}
+
+void AppController::processSerialCanvasLine(char* line) {
+  while (*line == ' ' || *line == '\t') {
+    ++line;
+  }
+  if (*line == '\0' || *line == '#') {
+    return;
+  }
+
+  char* save = nullptr;
+  char* command = strtok_r(line, " \t", &save);
+  if (command == nullptr) {
+    return;
+  }
+
+  if (strcasecmp(command, "HELP") == 0) {
+    Serial.println("CANVAS CMDS:");
+    Serial.println("CLEAR W|B");
+    Serial.println("PX x y color");
+    Serial.println("LINE x0 y0 x1 y1 color");
+    Serial.println("RECT x y w h color");
+    Serial.println("FILL x y w h color");
+    Serial.println("CIRCLE x y r color");
+    Serial.println("TEXT x y scale color text");
+    Serial.println("FLUSH");
+    Serial.println("EXIT");
+    return;
+  }
+
+  if (strcasecmp(command, "PING") == 0) {
+    Serial.println("CANVAS PONG");
+    display_.fillRect(300, 260, 72, 18, false);
+    display_.drawText(304, 264, "PING", true, 1);
+    requestSerialCanvasFlush(true);
+    return;
+  }
+
+  if (strcasecmp(command, "EXIT") == 0) {
+    exitSerialCanvasMode();
+    return;
+  }
+
+  if (strcasecmp(command, "FLUSH") == 0) {
+    requestSerialCanvasFlush(true);
+    return;
+  }
+
+  if (strcasecmp(command, "CLEAR") == 0) {
+    bool black = false;
+    const char* colorToken = strtok_r(nullptr, " \t", &save);
+    if (colorToken != nullptr && !parseCanvasColor(colorToken, black)) {
+      Serial.println("CANVAS ERR clear-color");
+      return;
+    }
+    display_.clear(!black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  int values[5] = {};
+  bool black = true;
+
+  if (strcasecmp(command, "PX") == 0 || strcasecmp(command, "PIXEL") == 0) {
+    for (uint8_t i = 0; i < 2; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR pixel-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR pixel-color");
+      return;
+    }
+    display_.setPixel(values[0], values[1], black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "LINE") == 0) {
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR line-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR line-color");
+      return;
+    }
+    display_.drawLine(values[0], values[1], values[2], values[3], black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "RECT") == 0 || strcasecmp(command, "FILL") == 0) {
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR rect-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR rect-color");
+      return;
+    }
+    if (strcasecmp(command, "FILL") == 0) {
+      display_.fillRect(values[0], values[1], values[2], values[3], black);
+    } else {
+      display_.drawRect(values[0], values[1], values[2], values[3], black);
+    }
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "CIRCLE") == 0) {
+    for (uint8_t i = 0; i < 3; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR circle-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR circle-color");
+      return;
+    }
+    display_.drawCircle(values[0], values[1], values[2], black);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  if (strcasecmp(command, "TEXT") == 0) {
+    for (uint8_t i = 0; i < 3; ++i) {
+      if (!parseCanvasInt(strtok_r(nullptr, " \t", &save), values[i])) {
+        Serial.println("CANVAS ERR text-args");
+        return;
+      }
+    }
+    if (!parseCanvasColor(strtok_r(nullptr, " \t", &save), black)) {
+      Serial.println("CANVAS ERR text-color");
+      return;
+    }
+    if (save == nullptr) {
+      Serial.println("CANVAS ERR text-body");
+      return;
+    }
+    while (*save == ' ' || *save == '\t') {
+      ++save;
+    }
+    display_.drawText(values[0], values[1], save, black, values[2]);
+    requestSerialCanvasFlush(false);
+    return;
+  }
+
+  Serial.println("CANVAS ERR unknown-command");
+}
+
+void AppController::requestSerialCanvasFlush(bool force) {
+  const uint32_t now = millis();
+  if (!force) {
+    state_.serialCanvasFlushPending = true;
+    return;
+  }
+
+  display_.flushFull();
+  state_.lastSerialCanvasFlushMs = now;
+  state_.serialCanvasFlushPending = false;
+}
+
 void AppController::handleSingleKeyClick() {
   if (state_.newMessageAlert) {
     state_.newMessageAlert = false;
@@ -1283,6 +1393,16 @@ void AppController::handleButtons() {
         if (state_.selectedSystemAction == kSystemActionResetBattery) {
           Serial.println("KEY: reset battery");
           handleSystemResetBattery();
+          return;
+        }
+        if (state_.selectedSystemAction == kSystemActionRePair) {
+          Serial.println("KEY: re-pair");
+          handleSystemRePair();
+          return;
+        }
+        if (state_.selectedSystemAction == kSystemActionCanvas) {
+          Serial.println("KEY: serial canvas");
+          enterSerialCanvasMode();
           return;
         }
         if (state_.selectedSystemAction == kSystemActionBack) {

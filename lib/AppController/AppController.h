@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "BatteryRuntimeEstimator.h"
 #include "BatteryMonitor.h"
 #include "AppStorage.h"
 #include "Button.h"
@@ -96,13 +97,6 @@ class AppController {
       Telemetry,
     };
 
-    struct BatteryHistoryPoint {
-      uint32_t uptimeS = 0;
-      float percent = 0.0f;
-    };
-
-    static constexpr size_t BatteryChartSize = AppStorage::MaxBatteryHistoryPoints;
-
     BatteryStatus battery;
     Shtc3Reading environment;
     RtcDateTime now;
@@ -147,22 +141,14 @@ class AppController {
     bool scheduledTaskForce = false;
     bool scheduledTaskIncludeTelemetry = false;
     bool scheduledTaskTodoSyncOk = true;
-    static constexpr size_t BatteryHistorySize = 180;
-    BatteryHistoryPoint batteryHistory[BatteryHistorySize];
-    size_t batteryHistoryCount = 0;
-    size_t batteryHistoryNext = 0;
-    int batteryEtaMinutes = -1;
-    bool hasBatteryEtaEstimate = false;
-    bool hasBatteryEtaFilter = false;
-    bool batteryEtaWasCharging = false;
-    float batteryEtaFilteredPercent = 0.0f;
-    uint32_t lastBatteryEtaSampleS = 0;
-    BatteryChartPoint batteryChart[BatteryChartSize];
-    size_t batteryChartCount = 0;
-    uint32_t batteryChartStartMinute = 0;
-    uint32_t batteryChartLastAbsoluteMinute = 0;
     uint32_t lastActivityMs = 0;
     uint8_t currentCpuMhz = 0;
+    bool serialCanvasMode = false;
+    bool serialCanvasFlushPending = false;
+    uint32_t lastSerialCanvasFlushMs = 0;
+    uint32_t lastSerialCanvasInputMs = 0;
+    char serialCanvasLine[192] = {};
+    size_t serialCanvasLineLen = 0;
   };
 
   static void handleHubStateChanged();
@@ -182,10 +168,8 @@ class AppController {
   void refreshSdStats(bool force = false);
   void handleForcedRefresh();
   void updateSelectedTodoAfterChange();
-  void updateBatteryRuntimeEstimate();
   void appendBatteryChartSample(const BatteryStatus& battery);
   void resetBatteryWindow();
-  void rebuildBatteryChartPrediction(DesktopClockUiModel& model) const;
   HubTelemetrySnapshot buildHubTelemetrySnapshot() const;
   uint16_t messageBodyLineCount(const String& text) const;
   void handleMessageKeyClick();
@@ -199,6 +183,13 @@ class AppController {
   void handleSystemClearMessages();
   void handleSystemWifiToggle();
   void handleSystemResetBattery();
+  void handleSystemRePair();
+  void enterSerialCanvasMode();
+  void exitSerialCanvasMode();
+  void handleSerialCanvasMode();
+  void processSerialCanvasInput();
+  void processSerialCanvasLine(char* line);
+  void requestSerialCanvasFlush(bool force = false);
   void handleSingleKeyClick();
   void handleKeyDoubleClick();
   void handlePendingKeyClick();
@@ -225,6 +216,7 @@ class AppController {
   TimeSync& timeSync_;
   WifiManager& wifi_;
   DesktopClockUi& ui_;
+  BatteryRuntimeEstimator batteryRuntime_;
   bool bootScreenActive_ = false;
   State state_;
 };

@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 #include "BatteryMonitor.h"
-#include "HubService.h"
+#include "HubTypes.h"
 #include "RtcClock.h"
 #include "SdCardStorage.h"
 #include "WifiCredential.h"
@@ -47,7 +47,6 @@ struct StoredHubCredentials {
   char deviceName[MaxDeviceNameLength + 1] = "";
   bool bound = false;
 };
-
 struct StoredBatteryHistoryPoint {
   uint32_t absoluteMinute = 0;
   float percent = 0.0f;

@@ -206,8 +206,8 @@ bool AppStorage::loadDeviceConfig(StoredDeviceConfig& config) const {
 
   const int messageLimit = doc["hub_message_limit"] | config.hubMessageLimit;
   const int todoLimit = doc["hub_todo_limit"] | config.hubTodoLimit;
-  config.hubMessageLimit = static_cast<uint8_t>(constrain(messageLimit, 1, static_cast<int>(HubService::MaxMessages)));
-  config.hubTodoLimit = static_cast<uint8_t>(constrain(todoLimit, 1, static_cast<int>(HubService::MaxTodos)));
+  config.hubMessageLimit = static_cast<uint8_t>(constrain(messageLimit, 1, static_cast<int>(kHubMaxMessages)));
+  config.hubTodoLimit = static_cast<uint8_t>(constrain(todoLimit, 1, static_cast<int>(kHubMaxTodos)));
   config.loaded = true;
   return true;
 }
@@ -259,7 +259,7 @@ bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
     return false;
   }
 
-  const size_t limit = count < HubService::MaxMessages ? count : HubService::MaxMessages;
+  const size_t limit = count < kHubMaxMessages ? count : kHubMaxMessages;
   const size_t indexLen = kMessageIndexHeaderSize + limit * 4;
   uint8_t* index = allocMessageBuffer(indexLen);
   if (!index) {
@@ -293,7 +293,7 @@ bool AppStorage::loadMessages(HubMessage* out, size_t maxCount, size_t& outCount
 
   uint8_t* index = nullptr;
   size_t indexLen = 0;
-  if (!sd_->readBinaryBuffer(MessagesIndexPath, index, indexLen, kMessageIndexHeaderSize + HubService::MaxMessages * 4, true)) {
+  if (!sd_->readBinaryBuffer(MessagesIndexPath, index, indexLen, kMessageIndexHeaderSize + kHubMaxMessages * 4, true)) {
     return false;
   }
 
@@ -544,7 +544,7 @@ bool AppStorage::saveTodos(const HubTodo* todos, size_t count) {
   JsonDocument doc;
   doc["version"] = kSchemaVersion;
   JsonArray items = doc["todos"].to<JsonArray>();
-  const size_t limit = count < HubService::MaxTodos ? count : HubService::MaxTodos;
+  const size_t limit = count < kHubMaxTodos ? count : kHubMaxTodos;
   for (size_t i = 0; i < limit; ++i) {
     JsonObject item = items.add<JsonObject>();
     item["id"] = todos[i].id;

@@ -107,15 +107,18 @@ constexpr BatteryCurvePoint kBatteryCurve[] = {
     {1175, 0.00f},
 };
 
-constexpr int kImmediatePlugInAdcStep = 35;
-constexpr int kImmediatePlugOutAdcStep = 35;
+// No dedicated charge-detect GPIO is available on this board, so charging is
+// inferred from battery ADC movement. Keep entry conservative to avoid
+// reporting "charging" during normal load changes or voltage rebound.
+constexpr int kImmediatePlugInAdcStep = 55;
+constexpr int kImmediatePlugOutAdcStep = 45;
 constexpr int kNoiseAdc = 3;
-constexpr int kChargingRiseAdc = 6;
+constexpr int kChargingRiseAdc = 7;
 constexpr int kChargingFallAdc = 8;
-constexpr int kChargingRiseSamples = 3;
+constexpr int kChargingRiseSamples = 5;
 constexpr int kChargingFallSamples = 3;
-constexpr int kChargingRiseTotalAdc = 18;
-constexpr int kChargingRiseTotalNearFullAdc = 16;
+constexpr int kChargingRiseTotalAdc = 32;
+constexpr int kChargingRiseTotalNearFullAdc = 24;
 constexpr int kChargingFallTotalAdc = 18;
 constexpr int kNearFullRawAdc = 1625;
 

@@ -666,7 +666,12 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     constexpr int rowY = detailY + 58;
     constexpr int rowW = detailW;
     constexpr int rowGap = 30;
-    const uint8_t action = min(model.selectedSystemAction, static_cast<uint8_t>(4));
+    constexpr uint8_t actionCount = 7;
+    constexpr uint8_t pageSize = 5;
+    const uint8_t action = min(model.selectedSystemAction, static_cast<uint8_t>(actionCount - 1));
+    const uint8_t page = action / pageSize;
+    const uint8_t pageStart = static_cast<uint8_t>(page * pageSize);
+    const uint8_t pageEnd = min(static_cast<uint8_t>(pageStart + pageSize), actionCount);
     const char* wifiLabel = !model.wifiConfigured ? "WIFI N/A" : (model.wifiDisabled ? "WIFI ON" : "WIFI OFF");
     char wifiNote[24];
     char clearNote[24];
@@ -687,54 +692,43 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     }
     snprintf(clearNote, sizeof(clearNote), "%u cached messages", static_cast<unsigned>(model.messageCount));
 
+    const char* actionLabels[actionCount] = {
+      wifiLabel,
+      "SYNC NOW",
+      "CLEAR MSG",
+      "RESET BAT",
+      "RE-PAIR",
+      "CANVAS",
+      "BACK",
+    };
+    const char* actionNotes[actionCount] = {
+      wifiNote,
+      model.wifiDisabled ? "offline refresh only" : "refresh network data",
+      clearNote,
+      "new ETA window",
+      "clear secret + hello",
+      "serial drawing mode",
+      "leave action mode",
+    };
+
     display.drawText(detailX, detailY, "ACTIONS", true, 2);
     display.drawText(detailX, detailY + 26, model.systemActionFocused ? "KEY SELECT   HOLD RUN" : "DBL ENTER COMMANDS", true, 1);
     display.drawFastHLine(detailX, detailY + 50, detailW, true);
-    drawSystemActionRow(display,
-                        rowX,
-                        rowY,
-                        rowW,
-                        "01",
-                        wifiLabel,
-                        wifiNote,
-                        model.systemActionFocused && action == 0,
-                        model.systemActionFocused);
-    drawSystemActionRow(display,
-                        rowX,
-                        rowY + rowGap,
-                        rowW,
-                        "02",
-                        "SYNC NOW",
-                        model.wifiDisabled ? "offline refresh only" : "refresh network data",
-                        model.systemActionFocused && action == 1,
-                        model.systemActionFocused);
-    drawSystemActionRow(display,
-                        rowX,
-                        rowY + rowGap * 2,
-                        rowW,
-                        "03",
-                        "CLEAR MSG",
-                        clearNote,
-                        model.systemActionFocused && action == 2,
-                        model.systemActionFocused);
-    drawSystemActionRow(display,
-                        rowX,
-                        rowY + rowGap * 3,
-                        rowW,
-                        "04",
-                        "RESET BAT",
-                        "new ETA window",
-                        model.systemActionFocused && action == 3,
-                        model.systemActionFocused);
-    drawSystemActionRow(display,
-                        rowX,
-                        rowY + rowGap * 4,
-                        rowW,
-                        "05",
-                        "BACK",
-                        "leave action mode",
-                        model.systemActionFocused && action == 4,
-                        model.systemActionFocused);
+
+    for (uint8_t i = pageStart; i < pageEnd; ++i) {
+      char number[4];
+      const uint8_t row = static_cast<uint8_t>(i - pageStart);
+      snprintf(number, sizeof(number), "%02u", static_cast<unsigned>(i + 1));
+      drawSystemActionRow(display,
+                rowX,
+                rowY + rowGap * row,
+                rowW,
+                number,
+                actionLabels[i],
+                actionNotes[i],
+                model.systemActionFocused && action == i,
+                model.systemActionFocused);
+    }
   } else {
     display.drawText(detailX, detailY, "BATTERY", true, 2);
     snprintf(text, sizeof(text), "%.2f%%", model.battery.percentFloat);
