@@ -8,13 +8,9 @@
 #include <cstring>
 #include <strings.h>
 
-#include "esp_sleep.h"
-
 namespace {
 
 AppController* activeController = nullptr;
-constexpr uint32_t kLightSleepMinMs = 20;
-constexpr uint32_t kLightSleepMaxMs = 120;
 constexpr uint8_t kSystemMenuStorage = 1;
 constexpr uint8_t kSystemMenuBattery = 2;
 constexpr uint8_t kSystemMenuAction = 3;
@@ -397,7 +393,7 @@ void AppController::loopOnce() {
   }
 
   updateCpuFrequency();
-  sleepUntilNextDeadline();
+  delay(config_.loopDelayMs);
 }
 
 void AppController::handleHubStateChanged() {
@@ -1502,65 +1498,6 @@ bool AppController::shouldUseActiveCpu() const {
     return true;
   }
   return false;
-}
-
-void AppController::sleepUntilNextDeadline() {
-  if (!canLightSleep()) {
-    delay(config_.loopDelayMs);
-    return;
-  }
-
-  const uint32_t now = millis();
-  uint32_t sleepMs = kLightSleepMaxMs;
-
-  sleepMs = min(sleepMs, msUntil(state_.lastRtcMs + config_.rtcPollMs, now));
-  if (config_.wifiConfigured && !wifi_.isConnected()) {
-    sleepMs = min(sleepMs, msUntil(state_.lastWifiRetryMs + config_.wifiRetryMs, now));
-  }
-
-  if (state_.lastHubSyncWindowMs != 0) {
-    sleepMs = min(sleepMs, msUntil(state_.lastHubSyncWindowMs + config_.hubSyncWindowMs, now));
-  }
-
-  if (state_.pendingKeyClick) {
-    sleepMs = min(sleepMs, msUntil(state_.pendingKeyClickMs + config_.keyDoubleClickMs, now));
-  }
-
-  if (state_.newMessageAlert) {
-    sleepMs = min(sleepMs, msUntil(state_.lastAlertBlinkMs + config_.newMessageBlinkMs, now));
-  }
-
-  if (sleepMs < kLightSleepMinMs) {
-    delay(config_.loopDelayMs);
-    return;
-  }
-
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(sleepMs) * 1000ULL);
-  const uint64_t buttonWakeMask = (1ULL << BoardConfig::ButtonKey) | (1ULL << BoardConfig::ButtonBoot);
-  esp_sleep_enable_ext1_wakeup(buttonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
-  esp_light_sleep_start();
-}
-
-uint32_t AppController::msUntil(uint32_t targetMs, uint32_t nowMs) const {
-  return static_cast<int32_t>(targetMs - nowMs) > 0 ? targetMs - nowMs : 0;
-}
-
-bool AppController::canLightSleep() const {
-  if (!config_.enableLightSleep) {
-    return false;
-  }
-  if (bootScreenActive_ || state_.uiDirty || hub_.isSyncing()) {
-    return false;
-  }
-  if (keyButton_.isPressed() || bootButton_.isPressed()) {
-    return false;
-  }
-  if (state_.scheduledTaskStep != State::ScheduledTaskStep::Idle ||
-      state_.initialHubSyncStep != State::InitialHubSyncStep::Done) {
-    return false;
-  }
-  return true;
 }
 
 void AppController::markUiDirty() {

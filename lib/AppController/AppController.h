@@ -32,7 +32,6 @@ struct AppControllerConfig {
   uint32_t batteryLogIntervalMs = 15UL * 60UL * 1000UL;
   uint32_t sdStatsRefreshMs = 30000;
   uint32_t loopDelayMs = 10;
-  bool enableLightSleep = false;
   bool enableDynamicCpuFrequency = true;
   uint8_t activeCpuMhz = 240;
   uint8_t idleCpuMhz = 80;
@@ -194,9 +193,6 @@ class AppController {
   void handleKeyDoubleClick();
   void handlePendingKeyClick();
   void handleButtons();
-  void sleepUntilNextDeadline();
-  uint32_t msUntil(uint32_t targetMs, uint32_t nowMs) const;
-  bool canLightSleep() const;
   void noteActivity();
   void updateCpuFrequency();
   void applyCpuFrequency(uint8_t mhz);
