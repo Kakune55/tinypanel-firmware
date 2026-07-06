@@ -4,12 +4,12 @@
 
 #include <WiFi.h>
 
-bool TimeSync::begin(const char* timezone, const char* ntp1, const char* ntp2) {
+bool TimeSync::begin(const char* timezone, const char* ntp1, const char* ntp2, const char* ntp3) {
   if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
-  configTzTime(timezone, ntp1, ntp2);
+  configTzTime(timezone, ntp1, ntp2, ntp3);
   return true;
 }
 

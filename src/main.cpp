@@ -332,17 +332,13 @@ void setup() {
   bootLog("sensors: first read");
   controller.readSensors(true);
   bootLogMemory("sensors");
-  bootLog("ntp: sync timeout 12s");
-  controller.trySyncTime(true);
-  bootLogf("ntp: %s", controller.ntpSynced() ? "synced" : "failed");
-  storageLog("ntp", controller.ntpSynced() ? "synced" : "failed", controller.ntpSynced() ? "INFO" : "WARN");
+  bootLog("ntp: initial sync queued");
+  storageLog("ntp", "initial sync queued");
   controller.makeBootIdFromCurrentTime();
   bootLogMemory("ntp");
 
-  bootLog("hub: initial sync");
-  controller.runInitialHubSyncNow();
-  storageLog("hub_sync", "initial sync complete");
-  bootLog("hub: initial sync done");
+  bootLog("hub: initial sync queued");
+  storageLog("hub_sync", "initial sync queued");
   bootLogMemory("sync");
 
   bootLog("ui: start desktop");

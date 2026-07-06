@@ -225,6 +225,7 @@ bool AppController::trySyncTime(bool force) {
   const uint32_t now = millis();
   if (!config_.wifiConfigured || !wifi_.isConnected()) {
     if (force) {
+      Serial.println(config_.wifiConfigured ? "NTP: skipped, wifi offline" : "NTP: skipped, wifi not configured");
       state_.ntpSyncFailed = true;
       markUiDirty();
     }
@@ -258,6 +259,23 @@ bool AppController::trySyncTime(bool force) {
   return state_.ntpSynced;
 }
 
+bool AppController::runInitialNtpSyncStep() {
+  if (!state_.initialNtpSyncPending || bootScreenActive_) {
+    return false;
+  }
+  if (!config_.wifiConfigured) {
+    state_.initialNtpSyncPending = false;
+    return false;
+  }
+  if (!wifi_.isConnected()) {
+    return false;
+  }
+
+  state_.initialNtpSyncPending = false;
+  trySyncTime(true);
+  return true;
+}
+
 void AppController::makeBootIdFromCurrentTime() {
   state_.bootId = makeBootId(state_.now);
 }
@@ -268,6 +286,11 @@ void AppController::renderUi() {
 }
 
 void AppController::syncHubTelemetry(bool force) {
+  if (!state_.now.valid) {
+    Serial.println("Hub: telemetry skipped, rtc invalid");
+    return;
+  }
+
   const HubRequestResult result =
       hub_.syncTelemetry(buildHubTelemetrySnapshot(), force, wifi_.isConnected(), handleHubStateChanged);
   if (result.attempted) {
@@ -320,20 +343,6 @@ void AppController::pollTodos(bool force) {
   }
 }
 
-void AppController::runInitialHubSyncNow() {
-  if (state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
-    return;
-  }
-
-  syncHubTelemetry(true);
-  pollWeather(true);
-  pollHubMessages(true);
-  pollTodos(true);
-  state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
-  publishPendingNewMessageAlert();
-  markUiDirty();
-}
-
 void AppController::restoreBatteryHistoryFromStorage() {
   if (!verifySdMounted() || !storage_.isReady()) {
     return;
@@ -365,9 +374,10 @@ void AppController::loopOnce() {
   handlePendingKeyClick();
   handleWifi();
   readRtc(false);
+  const bool didInitialNtpWork = runInitialNtpSyncStep();
   runScheduledTasks(false);
-  const bool didInitialHubWork = runNextInitialHubSyncStep();
-  if (!didInitialHubWork) {
+  const bool didInitialHubWork = !didInitialNtpWork && runNextInitialHubSyncStep();
+  if (!didInitialNtpWork && !didInitialHubWork) {
     runNextScheduledTask();
   }
 
@@ -563,6 +573,14 @@ bool AppController::runNextInitialHubSyncStep() {
   if (bootScreenActive_ || state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
     return false;
   }
+  if (!hub_.isConfigured()) {
+    state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
+    publishPendingNewMessageAlert();
+    return false;
+  }
+  if (!hubRequestsReady()) {
+    return false;
+  }
 
   switch (state_.initialHubSyncStep) {
     case State::InitialHubSyncStep::Telemetry:
@@ -605,11 +623,15 @@ bool AppController::runNextScheduledTask() {
       state_.scheduledTaskStep = State::ScheduledTaskStep::Messages;
       return true;
     case State::ScheduledTaskStep::Messages:
-      pollHubMessages(state_.scheduledTaskForce);
-      state_.scheduledTaskStep = State::ScheduledTaskStep::Todos;
+      if (hubRequestsReady()) {
+        pollHubMessages(state_.scheduledTaskForce);
+      }
+      state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
       return true;
     case State::ScheduledTaskStep::TodoSync: {
-      HubRequestResult todoSync = hub_.syncTodoChanges(wifi_.isConnected(), handleHubStateChanged);
+      HubRequestResult todoSync = hubRequestsReady()
+                                      ? hub_.syncTodoChanges(true, handleHubStateChanged)
+                                      : HubRequestResult{};
       state_.scheduledTaskTodoSyncOk = !todoSync.attempted || todoSync.ok;
       if (todoSync.attempted) {
         updateSelectedTodoAfterChange();
@@ -620,11 +642,15 @@ bool AppController::runNextScheduledTask() {
       return true;
     }
     case State::ScheduledTaskStep::Todos:
-      pollTodos(state_.scheduledTaskForce);
+      if (hubRequestsReady()) {
+        pollTodos(state_.scheduledTaskForce);
+      }
       state_.scheduledTaskStep = State::ScheduledTaskStep::Weather;
       return true;
     case State::ScheduledTaskStep::Weather:
-      pollWeather(state_.scheduledTaskForce);
+      if (hubRequestsReady()) {
+        pollWeather(state_.scheduledTaskForce);
+      }
       if (state_.scheduledTaskIncludeTelemetry) {
         state_.scheduledTaskStep = State::ScheduledTaskStep::Telemetry;
       } else {
@@ -636,7 +662,9 @@ bool AppController::runNextScheduledTask() {
       }
       return true;
     case State::ScheduledTaskStep::Telemetry:
-      syncHubTelemetry(true);
+      if (hubRequestsReady()) {
+        syncHubTelemetry(true);
+      }
       state_.scheduledTaskStep = State::ScheduledTaskStep::Idle;
       state_.scheduledTaskForce = false;
       state_.scheduledTaskIncludeTelemetry = false;
@@ -654,6 +682,10 @@ void AppController::queueScheduledTasks(bool force, bool includeTelemetry) {
   state_.scheduledTaskTodoSyncOk = true;
   state_.scheduledTaskStep = State::ScheduledTaskStep::WifiSignal;
   markUiDirty();
+}
+
+bool AppController::hubRequestsReady() const {
+  return hub_.isConfigured() && wifi_.isConnected();
 }
 
 void AppController::publishPendingNewMessageAlert() {
@@ -1490,12 +1522,32 @@ bool AppController::shouldUseActiveCpu() const {
   if (state_.pendingKeyClick || keyButton_.isPressed() || bootButton_.isPressed()) {
     return true;
   }
-  if (state_.scheduledTaskStep != State::ScheduledTaskStep::Idle ||
-      state_.initialHubSyncStep != State::InitialHubSyncStep::Done) {
+  if (state_.initialNtpSyncPending && wifi_.isConnected()) {
     return true;
   }
-  if (state_.newMessageAlert) {
+  if (state_.initialHubSyncStep != State::InitialHubSyncStep::Done && hubRequestsReady()) {
     return true;
+  }
+  if (scheduledTaskNeedsActiveCpu()) {
+    return true;
+  }
+  return false;
+}
+
+bool AppController::scheduledTaskNeedsActiveCpu() const {
+  switch (state_.scheduledTaskStep) {
+    case State::ScheduledTaskStep::Idle:
+    case State::ScheduledTaskStep::WifiSignal:
+    case State::ScheduledTaskStep::Sensors:
+      return false;
+    case State::ScheduledTaskStep::Ntp:
+      return config_.wifiConfigured && wifi_.isConnected();
+    case State::ScheduledTaskStep::Messages:
+    case State::ScheduledTaskStep::TodoSync:
+    case State::ScheduledTaskStep::Todos:
+    case State::ScheduledTaskStep::Weather:
+    case State::ScheduledTaskStep::Telemetry:
+      return hubRequestsReady();
   }
   return false;
 }

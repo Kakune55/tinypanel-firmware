@@ -25,7 +25,7 @@ struct AppControllerConfig {
   uint32_t wifiRetryMs = 30000;
   uint8_t wifiMaxFailures = 3;
   uint32_t ntpRetryMs = 10UL * 60UL * 1000UL;
-  uint32_t ntpUnsyncedRetryMs = 30000;
+  uint32_t ntpUnsyncedRetryMs = 5UL * 60UL * 1000UL;
   uint32_t keyDoubleClickMs = 350;
   uint32_t keyLongPressMs = 1000;
   uint32_t newMessageBlinkMs = 500;
@@ -35,7 +35,7 @@ struct AppControllerConfig {
   bool enableDynamicCpuFrequency = true;
   uint8_t activeCpuMhz = 240;
   uint8_t idleCpuMhz = 80;
-  uint32_t cpuIdleAfterMs = 2000;
+  uint32_t cpuIdleAfterMs = 500;
 };
 
 class AppController {
@@ -70,7 +70,6 @@ class AppController {
   void pollHubMessages(bool force = false);
   void pollWeather(bool force = false);
   void pollTodos(bool force = false);
-  void runInitialHubSyncNow();
   void restoreBatteryHistoryFromStorage();
   void loopOnce();
 
@@ -103,6 +102,7 @@ class AppController {
     bool ntpSynced = false;
     bool ntpSyncing = false;
     bool ntpSyncFailed = false;
+    bool initialNtpSyncPending = true;
     bool sdMounted = false;
     bool wifiConfigFromSd = false;
     bool wifiDisabled = false;
@@ -158,10 +158,12 @@ class AppController {
   void renderHubState();
   void handleWifi();
   void readRtc(bool force = false);
+  bool runInitialNtpSyncStep();
   void runScheduledTasks(bool force = false, bool includeTelemetry = false);
   bool runNextInitialHubSyncStep();
   bool runNextScheduledTask();
   void queueScheduledTasks(bool force, bool includeTelemetry);
+  bool hubRequestsReady() const;
   void publishPendingNewMessageAlert();
   bool verifySdMounted();
   void refreshSdStats(bool force = false);
@@ -197,6 +199,7 @@ class AppController {
   void updateCpuFrequency();
   void applyCpuFrequency(uint8_t mhz);
   bool shouldUseActiveCpu() const;
+  bool scheduledTaskNeedsActiveCpu() const;
   void markUiDirty();
 
   AppControllerConfig config_;

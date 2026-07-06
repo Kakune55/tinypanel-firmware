@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr int kSpiClockHz = 10 * 1000 * 1000;
+constexpr int kSpiClockHz = 40 * 1000 * 1000;
 constexpr uint8_t kWhiteByte = 0xFF;
 constexpr uint8_t kBlackByte = 0x00;
 constexpr spi_host_device_t kSpiHost = SPI3_HOST;
@@ -49,8 +49,15 @@ bool RlcdDisplay::begin() {
   }
 
   bufferLen_ = (BoardConfig::RlcdWidth * BoardConfig::RlcdHeight) / 8;
-  buffer_ = static_cast<uint8_t*>(heap_caps_malloc(bufferLen_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  const char* bufferLocation = "internal-dma";
+  buffer_ = static_cast<uint8_t*>(
+      heap_caps_malloc(bufferLen_, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
   if (buffer_ == nullptr) {
+    bufferLocation = "psram";
+    buffer_ = static_cast<uint8_t*>(heap_caps_malloc(bufferLen_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (buffer_ == nullptr) {
+    bufferLocation = "heap";
     buffer_ = static_cast<uint8_t*>(std::malloc(bufferLen_));
   }
 
@@ -58,6 +65,7 @@ bool RlcdDisplay::begin() {
     Serial.println("RlcdDisplay: framebuffer allocation failed");
     return false;
   }
+  Serial.printf("RlcdDisplay: framebuffer %d bytes in %s\n", bufferLen_, bufferLocation);
 
   std::memset(buffer_, kWhiteByte, bufferLen_);
 
