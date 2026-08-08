@@ -84,6 +84,7 @@ BatteryCurvePoint sdBatteryCurve[BatteryMonitor::MaxExternalCurvePoints];
 HubMessage sdCachedMessages[HubService::MaxMessages];
 HubWeather sdCachedWeather;
 HubTodo sdCachedTodos[HubService::MaxTodos];
+HubTodoDelete sdCachedTodoDeletes[HubService::MaxTodos];
 StoredHubCredentials hubCredentials;
 
 void storageLog(const char* event, const char* detail, const char* level = "INFO") {
@@ -254,8 +255,12 @@ void setup() {
     }
 
     size_t cachedTodoCount = 0;
-    if (appStorage.loadTodos(sdCachedTodos, HubService::MaxTodos, cachedTodoCount)) {
+    size_t cachedTodoDeleteCount = 0;
+    if (appStorage.loadTodos(sdCachedTodos, HubService::MaxTodos, cachedTodoCount,
+                             sdCachedTodoDeletes, HubService::MaxTodos,
+                             &cachedTodoDeleteCount)) {
       hub.setTodos(sdCachedTodos, cachedTodoCount);
+      hub.setPendingTodoDeletes(sdCachedTodoDeletes, cachedTodoDeleteCount);
       bootLogf("todos: cached %u", static_cast<unsigned>(cachedTodoCount));
       storageLog("todos", "restored cache");
     }

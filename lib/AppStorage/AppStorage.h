@@ -72,8 +72,16 @@ class AppStorage {
   bool loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const;
   bool saveWeather(const HubWeather& weather);
   bool loadWeather(HubWeather& out) const;
-  bool saveTodos(const HubTodo* todos, size_t count);
-  bool loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) const;
+  bool saveTodos(const HubTodo* todos,
+                 size_t count,
+                 const HubTodoDelete* deletes = nullptr,
+                 size_t deleteCount = 0);
+  bool loadTodos(HubTodo* out,
+                 size_t maxCount,
+                 size_t& outCount,
+                 HubTodoDelete* deletes = nullptr,
+                 size_t maxDeletes = 0,
+                 size_t* outDeleteCount = nullptr) const;
   bool loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_t& outCount) const;
   bool loadBatteryHistory(StoredBatteryHistoryPoint* out, size_t maxCount, size_t& outCount) const;
   bool appendBatterySample(const BatteryStatus& battery, const RtcDateTime& now, uint32_t uptimeS);

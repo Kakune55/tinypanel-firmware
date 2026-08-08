@@ -107,6 +107,7 @@ class AppController {
       Scheduled,
       RePair,
       HubRegistration,
+      Storage,
     };
 
     BatteryStatus battery;
@@ -171,6 +172,19 @@ class AppController {
     bool rePairRequested = false;
     bool rePairPrepared = false;
     uint8_t hubHelloFailureCount = 0;
+    bool saveHubCredentialsPending = false;
+    StoredHubCredentials pendingHubCredentials;
+    bool saveWeatherPending = false;
+    bool saveTodosPending = false;
+    bool saveMessagesPending = false;
+    bool sdRefreshPending = false;
+    bool sdMountPending = false;
+    bool storageMountInFlight = false;
+    AppIoJobType storageInFlight = AppIoJobType::None;
+    uint32_t nextStorageRetryMs = 0;
+    AppBatteryLogSample pendingBatterySamples[3];
+    size_t pendingBatterySampleCount = 0;
+    size_t batterySamplesInFlight = 0;
   };
 
   String formatRtcTimestamp(const RtcDateTime& dt) const;
@@ -181,6 +195,9 @@ class AppController {
   void handleWifiResult(const AppIoResult& result);
   void handleNtpResult(const AppIoResult& result);
   void handleHubResult(const AppIoResult& result, State::IoOwner owner);
+  void handleStorageResult(const AppIoResult& result);
+  bool runPendingStorage();
+  bool queueBatterySample(const BatteryStatus& battery, const RtcDateTime& now, uint32_t uptimeS);
   void refreshHubSnapshot();
   void advanceInitialHubStep();
   void advanceScheduledStep(bool todoSyncOk = true);

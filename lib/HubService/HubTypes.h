@@ -60,6 +60,11 @@ struct HubTodo {
   bool dirty = false;
 };
 
+struct HubTodoDelete {
+  int id = 0;
+  int version = 0;
+};
+
 struct HubWeatherHourly {
   String time;
   String condition;

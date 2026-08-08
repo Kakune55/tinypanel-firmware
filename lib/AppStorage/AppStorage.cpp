@@ -597,8 +597,11 @@ bool AppStorage::loadWeather(HubWeather& out) const {
   return out.valid;
 }
 
-bool AppStorage::saveTodos(const HubTodo* todos, size_t count) {
-  if (!isReady() || (!todos && count > 0)) {
+bool AppStorage::saveTodos(const HubTodo* todos,
+                           size_t count,
+                           const HubTodoDelete* deletes,
+                           size_t deleteCount) {
+  if (!isReady() || (!todos && count > 0) || (!deletes && deleteCount > 0)) {
     return false;
   }
 
@@ -614,6 +617,14 @@ bool AppStorage::saveTodos(const HubTodo* todos, size_t count) {
     item["version"] = todos[i].version;
     item["created_at"] = todos[i].createdAt;
     item["updated_at"] = todos[i].updatedAt;
+    item["dirty"] = todos[i].dirty;
+  }
+  JsonArray pendingDeletes = doc["pending_deletes"].to<JsonArray>();
+  const size_t deleteLimit = deleteCount < kHubMaxTodos ? deleteCount : kHubMaxTodos;
+  for (size_t i = 0; i < deleteLimit; ++i) {
+    JsonObject item = pendingDeletes.add<JsonObject>();
+    item["id"] = deletes[i].id;
+    item["version"] = deletes[i].version;
   }
 
   String text;
@@ -622,8 +633,16 @@ bool AppStorage::saveTodos(const HubTodo* todos, size_t count) {
   return sd_->writeTextAtomic(TodosPath, text);
 }
 
-bool AppStorage::loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) const {
+bool AppStorage::loadTodos(HubTodo* out,
+                           size_t maxCount,
+                           size_t& outCount,
+                           HubTodoDelete* deletes,
+                           size_t maxDeletes,
+                           size_t* outDeleteCount) const {
   outCount = 0;
+  if (outDeleteCount) {
+    *outDeleteCount = 0;
+  }
   if (!isReady() || !out || maxCount == 0) {
     return false;
   }
@@ -655,13 +674,27 @@ bool AppStorage::loadTodos(HubTodo* out, size_t maxCount, size_t& outCount) cons
     target.version = item["version"] | 0;
     target.createdAt = item["created_at"] | "";
     target.updatedAt = item["updated_at"] | "";
-    target.dirty = false;
+    target.dirty = item["dirty"] | false;
     if (target.id > 0 && target.text.length() > 0 && target.version > 0) {
       ++outCount;
     }
   }
 
-  return outCount > 0;
+  if (deletes && maxDeletes > 0 && outDeleteCount) {
+    for (JsonObject item : doc["pending_deletes"].as<JsonArray>()) {
+      if (*outDeleteCount >= maxDeletes) {
+        break;
+      }
+      HubTodoDelete& target = deletes[(*outDeleteCount)++];
+      target.id = item["id"] | 0;
+      target.version = item["version"] | 0;
+      if (target.id <= 0 || target.version <= 0) {
+        --(*outDeleteCount);
+      }
+    }
+  }
+
+  return outCount > 0 || (outDeleteCount && *outDeleteCount > 0);
 }
 
 bool AppStorage::loadBatteryCurve(BatteryCurvePoint* out, size_t maxCount, size_t& outCount) const {

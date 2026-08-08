@@ -20,6 +20,18 @@ const char* jobName(AppIoJobType type) {
       return "hub-todos";
     case AppIoJobType::HubTodoChanges:
       return "hub-todo-changes";
+    case AppIoJobType::StoreHubCredentials:
+      return "store-hub-credentials";
+    case AppIoJobType::StoreWeather:
+      return "store-weather";
+    case AppIoJobType::StoreTodos:
+      return "store-todos";
+    case AppIoJobType::StoreMessages:
+      return "store-messages";
+    case AppIoJobType::AppendBatterySamples:
+      return "store-battery";
+    case AppIoJobType::RefreshSd:
+      return "sd-refresh";
     case AppIoJobType::None:
       return "none";
   }
@@ -33,8 +45,12 @@ bool persistMessages(const HubMessage* messages, size_t count, void* context) {
 
 }  // namespace
 
-AppIoWorker::AppIoWorker(WifiManager& wifi, TimeSync& timeSync, HubService& hub, AppStorage& storage)
-    : wifi_(wifi), timeSync_(timeSync), hub_(hub), storage_(storage) {}
+AppIoWorker::AppIoWorker(WifiManager& wifi,
+                         TimeSync& timeSync,
+                         HubService& hub,
+                         AppStorage& storage,
+                         SdCardStorage& sdCard)
+    : wifi_(wifi), timeSync_(timeSync), hub_(hub), storage_(storage), sdCard_(sdCard) {}
 
 bool AppIoWorker::begin(uint32_t stackBytes, UBaseType_t priority, BaseType_t core) {
   if (task_) {
@@ -60,20 +76,87 @@ bool AppIoWorker::begin(uint32_t stackBytes, UBaseType_t priority, BaseType_t co
 }
 
 bool AppIoWorker::submit(const AppIoRequest& request) {
-  if (!task_ || !mutex_ || request.type == AppIoJobType::None) {
+  if (request.type == AppIoJobType::None) {
     return false;
   }
+  if (!beginSubmit(request.type)) {
+    return false;
+  }
+  request_ = request;
+  request_.telemetry.deviceId = nullptr;
+  xSemaphoreGive(mutex_);
+  xTaskNotifyGive(task_);
+  return true;
+}
 
+bool AppIoWorker::beginSubmit(AppIoJobType type) {
+  if (!task_ || !mutex_ || type == AppIoJobType::None) {
+    return false;
+  }
   xSemaphoreTake(mutex_, portMAX_DELAY);
   if (busy_ || resultPending_) {
     xSemaphoreGive(mutex_);
     return false;
   }
-  request_ = request;
-  request_.telemetry.deviceId = nullptr;
+  request_ = {};
+  request_.type = type;
   busy_ = true;
-  xSemaphoreGive(mutex_);
+  return true;
+}
 
+bool AppIoWorker::submitHubCredentials(const StoredHubCredentials& credentials) {
+  if (!beginSubmit(AppIoJobType::StoreHubCredentials)) return false;
+  storedHubCredentials_ = credentials;
+  xSemaphoreGive(mutex_);
+  xTaskNotifyGive(task_);
+  return true;
+}
+
+bool AppIoWorker::submitWeather(const HubWeather& weather) {
+  if (!beginSubmit(AppIoJobType::StoreWeather)) return false;
+  storedWeather_ = weather;
+  xSemaphoreGive(mutex_);
+  xTaskNotifyGive(task_);
+  return true;
+}
+
+bool AppIoWorker::submitTodos(const HubTodo* todos,
+                              size_t count,
+                              const HubTodoDelete* deletes,
+                              size_t deleteCount) {
+  if ((!todos && count > 0) || (!deletes && deleteCount > 0) ||
+      !beginSubmit(AppIoJobType::StoreTodos)) return false;
+  storedTodoCount_ = min(count, HubService::MaxTodos);
+  for (size_t i = 0; i < storedTodoCount_; ++i) storedTodos_[i] = todos[i];
+  storedTodoDeleteCount_ = min(deleteCount, HubService::MaxTodos);
+  for (size_t i = 0; i < storedTodoDeleteCount_; ++i) storedTodoDeletes_[i] = deletes[i];
+  xSemaphoreGive(mutex_);
+  xTaskNotifyGive(task_);
+  return true;
+}
+
+bool AppIoWorker::submitMessages(const HubMessage* messages, size_t count) {
+  if ((!messages && count > 0) || !beginSubmit(AppIoJobType::StoreMessages)) return false;
+  storedMessageCount_ = min(count, HubService::MaxMessages);
+  for (size_t i = 0; i < storedMessageCount_; ++i) storedMessages_[i] = messages[i];
+  xSemaphoreGive(mutex_);
+  xTaskNotifyGive(task_);
+  return true;
+}
+
+bool AppIoWorker::submitBatterySamples(const AppBatteryLogSample* samples, size_t count) {
+  if (!samples || count == 0 || !beginSubmit(AppIoJobType::AppendBatterySamples)) return false;
+  storedBatterySampleCount_ = min(count, static_cast<size_t>(3));
+  for (size_t i = 0; i < storedBatterySampleCount_; ++i) storedBatterySamples_[i] = samples[i];
+  xSemaphoreGive(mutex_);
+  xTaskNotifyGive(task_);
+  return true;
+}
+
+bool AppIoWorker::submitSdRefresh(bool mountIfNeeded) {
+  if (!beginSubmit(AppIoJobType::RefreshSd)) return false;
+  mountSdIfNeeded_ = mountIfNeeded;
+  xSemaphoreGive(mutex_);
   xTaskNotifyGive(task_);
   return true;
 }
@@ -117,11 +200,10 @@ void AppIoWorker::taskLoop() {
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    AppIoRequest request;
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    request = request_;
-    xSemaphoreGive(mutex_);
+    AppIoRequest& request = request_;
     request.telemetry.deviceId = request.telemetryDeviceId.c_str();
+    xSemaphoreGive(mutex_);
 
     Serial.printf("IO: %s start\n", jobName(request.type));
     AppIoResult result = execute(request);
@@ -179,6 +261,41 @@ AppIoResult AppIoWorker::execute(AppIoRequest& request) {
     case AppIoJobType::HubTodoChanges:
       result.request = hub_.syncTodoChanges(wifi_.isConnected(), nullptr);
       result.operationOk = !result.request.attempted || result.request.ok;
+      break;
+    case AppIoJobType::StoreHubCredentials:
+      result.operationOk = storage_.isReady() && storage_.saveHubCredentials(storedHubCredentials_);
+      break;
+    case AppIoJobType::StoreWeather:
+      result.operationOk = storage_.isReady() && storage_.saveWeather(storedWeather_);
+      break;
+    case AppIoJobType::StoreTodos:
+      result.operationOk = storage_.isReady() &&
+                           storage_.saveTodos(storedTodos_, storedTodoCount_,
+                                              storedTodoDeletes_, storedTodoDeleteCount_);
+      break;
+    case AppIoJobType::StoreMessages:
+      result.operationOk = storage_.isReady() && storage_.saveMessages(storedMessages_, storedMessageCount_);
+      break;
+    case AppIoJobType::AppendBatterySamples:
+      result.operationOk = storage_.isReady();
+      for (size_t i = 0; i < storedBatterySampleCount_ && result.operationOk; ++i) {
+        result.operationOk = storage_.appendBatterySample(storedBatterySamples_[i].battery,
+                                                         storedBatterySamples_[i].time,
+                                                         storedBatterySamples_[i].uptimeS);
+      }
+      break;
+    case AppIoJobType::RefreshSd:
+      result.sdMounted = sdCard_.isMounted();
+      if (!result.sdMounted && mountSdIfNeeded_) {
+        result.sdMounted = sdCard_.begin();
+        if (result.sdMounted) storage_.begin(sdCard_);
+      } else if (result.sdMounted) {
+        result.sdMounted = sdCard_.verifyMounted();
+      }
+      result.storageReady = storage_.isReady();
+      result.sdTotalMb = result.sdMounted ? sdCard_.cardSizeBytes() / (1024UL * 1024UL) : 0;
+      result.sdUsedMb = result.sdMounted ? sdCard_.usedBytes() / (1024UL * 1024UL) : 0;
+      result.operationOk = result.sdMounted;
       break;
     case AppIoJobType::None:
       break;

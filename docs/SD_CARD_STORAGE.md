@@ -103,7 +103,7 @@ TinyPanel 可以使用 microSD 卡保存运行时配置、缓存和日志。SD �
 - 新 Hub 使用 `X-Device-ID` 和 `X-Device-Secret` 鉴权。
 - 如果 `device_secret` 为空，固件联网后会调用 `POST /api/v1/device/hello` 获取并保存。
 - 未绑定设备时，Hub 返回的 `bind_code` 会显示在启动日志中，用于用户侧绑定设备。
-- TODO 使用设备端只读接口 `GET /api/v1/device/todos` 同步，不需要保存用户 Token。
+- TODO 使用设备接口同步；状态修改和删除分别通过 `PATCH`、`DELETE /api/v1/device/todos/{id}` 提交，不需要保存用户 Token。
 - `hub.json` 含敏感凭据，不建议把 SD 卡交给不可信环境读取。
 
 ## 消息缓存
@@ -119,6 +119,16 @@ TinyPanel 可以使用 microSD 卡保存运行时配置、缓存和日志。SD �
 这样离线或网络还没连上时，MESSAGE 页面也不会是空的。
 
 格式详见 [`MESSAGE_CACHE_FORMAT.md`](MESSAGE_CACHE_FORMAT.md)。
+
+## 待办缓存
+
+路径：
+
+```text
+/tinypanel/cache/todos.json
+```
+
+缓存保存服务端待办、本地未提交的状态修改和删除标记。设备重启后会恢复这些变更，联网后继续后台同步。
 
 ## 电池曲线
 

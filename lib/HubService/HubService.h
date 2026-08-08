@@ -41,6 +41,8 @@ struct HubStateSnapshot {
   HubWeather weather;
   HubTodo todos[kHubMaxTodos];
   size_t todoCount = 0;
+  HubTodoDelete pendingTodoDeletes[kHubMaxTodos];
+  size_t pendingTodoDeleteCount = 0;
 };
 
 class HubService {
@@ -107,6 +109,7 @@ public:
   const HubTodo* todos() const;
   const HubTodo* todoAt(size_t index) const;
   bool setTodos(const HubTodo* todos, size_t count);
+  bool setPendingTodoDeletes(const HubTodoDelete* deletes, size_t count);
   void snapshot(HubStateSnapshot& out) const;
 
 private:
@@ -168,11 +171,6 @@ private:
   void lockState() const;
   void unlockState() const;
 
-  struct PendingTodoDelete {
-    int id = 0;
-    int version = 0;
-  };
-
   String baseUrl_;
   String deviceSecret_;
   String deviceId_;
@@ -204,7 +202,7 @@ private:
   uint8_t todoLimit_ = MaxTodos;
   HubTodo todos_[MaxTodos];
   size_t todoCount_ = 0;
-  PendingTodoDelete pendingTodoDeletes_[MaxTodos];
+  HubTodoDelete pendingTodoDeletes_[MaxTodos];
   size_t pendingTodoDeleteCount_ = 0;
   WiFiClient client_;
   WiFiClientSecure secureClient_;

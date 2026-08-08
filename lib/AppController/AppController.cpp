@@ -140,7 +140,7 @@ AppController::AppController(const AppControllerConfig& config,
       timeSync_(timeSync),
       wifi_(wifi),
       ui_(ui),
-      ioWorker_(wifi, timeSync, hub, storage) {}
+      ioWorker_(wifi, timeSync, hub, storage, sdCard) {}
 
 void AppController::setBootScreenActive(bool active) {
   bootScreenActive_ = active;
@@ -154,7 +154,12 @@ void AppController::applyConfig(const AppControllerConfig& config) {
 
 void AppController::setSdMounted(bool mounted) {
   state_.sdMounted = mounted;
-  refreshSdStats(true);
+  if (ioWorker_.isReady()) {
+    refreshSdStats(true);
+  } else {
+    state_.sdCardTotalMb = mounted ? sdCard_.cardSizeBytes() / (1024UL * 1024UL) : 0;
+    state_.sdCardUsedMb = mounted ? sdCard_.usedBytes() / (1024UL * 1024UL) : 0;
+  }
   markUiDirty();
 }
 
@@ -180,6 +185,7 @@ bool AppController::ntpSynced() const {
 
 bool AppController::beginBackgroundTasks() {
   refreshHubSnapshot();
+  state_.todoSyncRequested = hub_.hasPendingTodoChanges();
   state_.wifiWasConnected = wifi_.isConnected();
   state_.hubHelloPending = hub_.canHello();
   state_.nextHubHelloMs = millis();
@@ -200,9 +206,9 @@ void AppController::readSensors(bool force) {
   batteryRuntime_.updateEstimate(state_.battery, millis() / 1000UL, config_.batteryLogIntervalMs);
 
   const uint32_t nowMs = millis();
-  if (verifySdMounted() && storage_.isReady() &&
-      (force || state_.lastBatteryLogMs == 0 || nowMs - state_.lastBatteryLogMs >= config_.batteryLogIntervalMs)) {
-    if (storage_.appendBatterySample(state_.battery, state_.now, nowMs / 1000UL)) {
+  if (state_.sdMounted && storage_.isReady() &&
+      (state_.lastBatteryLogMs == 0 || nowMs - state_.lastBatteryLogMs >= config_.batteryLogIntervalMs)) {
+    if (queueBatterySample(state_.battery, state_.now, nowMs / 1000UL)) {
       state_.lastBatteryLogMs = nowMs;
       appendBatteryChartSample(state_.battery);
     }
@@ -360,6 +366,8 @@ void AppController::loopOnce() {
   handleMessageDeleteHold();
   handlePendingKeyClick();
   handleIoResult();
+  refreshSdStats(false);
+  runPendingStorage();
   handleWifi();
   handleHubRegistration();
   readRtc(false);
@@ -748,6 +756,14 @@ void AppController::handleIoResult() {
     case AppIoJobType::HubTodoChanges:
       handleHubResult(result, owner);
       break;
+    case AppIoJobType::StoreHubCredentials:
+    case AppIoJobType::StoreWeather:
+    case AppIoJobType::StoreTodos:
+    case AppIoJobType::StoreMessages:
+    case AppIoJobType::AppendBatterySamples:
+    case AppIoJobType::RefreshSd:
+      handleStorageResult(result);
+      break;
     case AppIoJobType::None:
       break;
   }
@@ -760,7 +776,8 @@ void AppController::handleIoResult() {
     const bool todoSyncOk = result.type != AppIoJobType::HubTodoChanges || result.operationOk;
     advanceScheduledStep(todoSyncOk);
   }
-  if (result.request.attempted && !result.request.ok && result.request.retryable) {
+  if (owner != State::IoOwner::Storage && result.request.attempted &&
+      !result.request.ok && result.request.retryable) {
     state_.nextHubRetryMs = millis() + config_.hubFailureRetryMs;
     Serial.printf("Hub: retry queued in %lu ms\n",
                   static_cast<unsigned long>(config_.hubFailureRetryMs));
@@ -830,9 +847,8 @@ void AppController::handleHubResult(const AppIoResult& result, State::IoOwner ow
       snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", result.hello.deviceSecret.c_str());
       snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", result.hello.bindCode.c_str());
       snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", result.hello.name.c_str());
-      if (storage_.isReady()) {
-        storage_.saveHubCredentials(updated);
-      }
+      state_.pendingHubCredentials = updated;
+      state_.saveHubCredentialsPending = true;
       if (state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
         state_.initialHubSyncStep = State::InitialHubSyncStep::Telemetry;
       }
@@ -857,16 +873,134 @@ void AppController::handleHubResult(const AppIoResult& result, State::IoOwner ow
       }
     }
   } else if (result.type == AppIoJobType::HubWeather && result.request.ok) {
-    if (verifySdMounted()) {
-      storage_.saveWeather(hubSnapshot_.weather);
-    }
+    state_.saveWeatherPending = true;
   } else if ((result.type == AppIoJobType::HubTodos || result.type == AppIoJobType::HubTodoChanges) &&
              result.request.ok) {
-    if (verifySdMounted()) {
-      storage_.saveTodos(hubSnapshot_.todos, hubSnapshot_.todoCount);
-    }
+    state_.saveTodosPending = true;
     updateSelectedTodoAfterChange();
   }
+}
+
+bool AppController::runPendingStorage() {
+  if (!ioWorker_.isReady() || ioWorker_.isBusy() ||
+      !deadlineReached(millis(), state_.nextStorageRetryMs)) {
+    return false;
+  }
+
+  AppIoJobType submitted = AppIoJobType::None;
+  if (state_.sdRefreshPending) {
+    state_.storageMountInFlight = state_.sdMountPending;
+    if (ioWorker_.submitSdRefresh(state_.storageMountInFlight)) {
+      state_.sdRefreshPending = false;
+      state_.sdMountPending = false;
+      submitted = AppIoJobType::RefreshSd;
+    }
+  } else if (!storage_.isReady()) {
+    return false;
+  } else if (state_.saveHubCredentialsPending) {
+    if (ioWorker_.submitHubCredentials(state_.pendingHubCredentials)) {
+      state_.saveHubCredentialsPending = false;
+      submitted = AppIoJobType::StoreHubCredentials;
+    }
+  } else if (state_.saveMessagesPending) {
+    if (ioWorker_.submitMessages(hubSnapshot_.messages, hubSnapshot_.messageCount)) {
+      state_.saveMessagesPending = false;
+      submitted = AppIoJobType::StoreMessages;
+    }
+  } else if (state_.saveTodosPending) {
+    if (ioWorker_.submitTodos(hubSnapshot_.todos, hubSnapshot_.todoCount,
+                              hubSnapshot_.pendingTodoDeletes,
+                              hubSnapshot_.pendingTodoDeleteCount)) {
+      state_.saveTodosPending = false;
+      submitted = AppIoJobType::StoreTodos;
+    }
+  } else if (state_.saveWeatherPending) {
+    if (ioWorker_.submitWeather(hubSnapshot_.weather)) {
+      state_.saveWeatherPending = false;
+      submitted = AppIoJobType::StoreWeather;
+    }
+  } else if (state_.pendingBatterySampleCount > 0) {
+    state_.batterySamplesInFlight = state_.pendingBatterySampleCount;
+    if (ioWorker_.submitBatterySamples(state_.pendingBatterySamples,
+                                       state_.batterySamplesInFlight)) {
+      submitted = AppIoJobType::AppendBatterySamples;
+    } else {
+      state_.batterySamplesInFlight = 0;
+    }
+  }
+
+  if (submitted == AppIoJobType::None) {
+    return false;
+  }
+  state_.storageInFlight = submitted;
+  state_.ioOwner = State::IoOwner::Storage;
+  noteActivity();
+  return true;
+}
+
+void AppController::handleStorageResult(const AppIoResult& result) {
+  const bool ok = result.operationOk;
+  switch (result.type) {
+    case AppIoJobType::StoreHubCredentials:
+      state_.saveHubCredentialsPending = state_.saveHubCredentialsPending || !ok;
+      break;
+    case AppIoJobType::StoreWeather:
+      state_.saveWeatherPending = state_.saveWeatherPending || !ok;
+      break;
+    case AppIoJobType::StoreTodos:
+      state_.saveTodosPending = state_.saveTodosPending || !ok;
+      break;
+    case AppIoJobType::StoreMessages:
+      state_.saveMessagesPending = state_.saveMessagesPending || !ok;
+      if (ok && !state_.saveMessagesPending) {
+        hub_.markMessagesPersisted();
+      }
+      break;
+    case AppIoJobType::AppendBatterySamples:
+      if (ok) {
+        const size_t completed = min(state_.batterySamplesInFlight,
+                                     state_.pendingBatterySampleCount);
+        for (size_t i = completed; i < state_.pendingBatterySampleCount; ++i) {
+          state_.pendingBatterySamples[i - completed] = state_.pendingBatterySamples[i];
+        }
+        state_.pendingBatterySampleCount -= completed;
+      }
+      state_.batterySamplesInFlight = 0;
+      break;
+    case AppIoJobType::RefreshSd:
+      state_.sdMounted = result.sdMounted;
+      state_.sdCardTotalMb = result.sdTotalMb;
+      state_.sdCardUsedMb = result.sdUsedMb;
+      if (!ok && state_.storageMountInFlight) {
+        state_.sdRefreshPending = true;
+        state_.sdMountPending = true;
+      }
+      state_.storageMountInFlight = false;
+      markUiDirty();
+      break;
+    default:
+      break;
+  }
+  state_.storageInFlight = AppIoJobType::None;
+  state_.nextStorageRetryMs = ok ? 0 : millis() + config_.sdStatsRefreshMs;
+  if (!ok) {
+    Serial.printf("IO: storage retry in %lu ms\n",
+                  static_cast<unsigned long>(config_.sdStatsRefreshMs));
+  }
+}
+
+bool AppController::queueBatterySample(const BatteryStatus& battery,
+                                       const RtcDateTime& now,
+                                       uint32_t uptimeS) {
+  if (state_.pendingBatterySampleCount >= 3) {
+    Serial.println("IO: battery log queue full");
+    return false;
+  }
+  AppBatteryLogSample& sample = state_.pendingBatterySamples[state_.pendingBatterySampleCount++];
+  sample.battery = battery;
+  sample.time = now;
+  sample.uptimeS = uptimeS;
+  return true;
 }
 
 void AppController::refreshHubSnapshot() {
@@ -972,27 +1106,14 @@ void AppController::refreshSdStats(bool force) {
   }
 
   state_.lastSdStatsMs = now;
-  if (!verifySdMounted()) {
-    state_.sdCardTotalMb = 0;
-    state_.sdCardUsedMb = 0;
-    markUiDirty();
-    return;
-  }
-
-  state_.sdCardTotalMb = sdCard_.cardSizeBytes() / (1024UL * 1024UL);
-  state_.sdCardUsedMb = sdCard_.usedBytes() / (1024UL * 1024UL);
-  markUiDirty();
+  state_.sdRefreshPending = true;
+  runPendingStorage();
 }
 
 void AppController::handleForcedRefresh() {
-  if (!sdCard_.isMounted()) {
-    setSdMounted(sdCard_.begin());
-    if (sdCard_.isMounted()) {
-      storage_.begin(sdCard_);
-    }
-    sdCard_.printInfo(Serial);
-  }
-  refreshSdStats(true);
+  state_.sdRefreshPending = true;
+  state_.sdMountPending = !sdCard_.isMounted();
+  state_.nextStorageRetryMs = 0;
   if (!wifi_.isConnected() && config_.wifiConfigured && !state_.wifiDisabled) {
     state_.nextWifiRetryMs = millis();
   }
@@ -1017,12 +1138,12 @@ void AppController::appendBatteryChartSample(const BatteryStatus& battery) {
 void AppController::resetBatteryWindow() {
   batteryRuntime_.reset(state_.battery.charging);
 
-  if (verifySdMounted() && storage_.isReady()) {
+  if (state_.sdMounted && storage_.isReady()) {
     BatteryStatus resetMarker = state_.battery;
     resetMarker.charging = true;
     const uint32_t uptimeS = millis() / 1000UL;
-    storage_.appendBatterySample(resetMarker, state_.now, uptimeS);
-    if (storage_.appendBatterySample(state_.battery, state_.now, uptimeS)) {
+    const bool markerQueued = queueBatterySample(resetMarker, state_.now, uptimeS);
+    if (markerQueued && queueBatterySample(state_.battery, state_.now, uptimeS)) {
       state_.lastBatteryLogMs = millis();
     }
   }
@@ -1099,11 +1220,7 @@ void AppController::handleMessageDelete() {
   }
 
   refreshHubSnapshot();
-  if (verifySdMounted()) {
-    if (storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount)) {
-      hub_.markMessagesPersisted();
-    }
-  }
+  state_.saveMessagesPending = true;
   const size_t nextCount = hubSnapshot_.messageCount;
   if (nextCount == 0) {
     state_.selectedMessage = 0;
@@ -1159,6 +1276,7 @@ void AppController::handleTodoStatusToggle() {
   if (hub_.setTodoStatusLocal(state_.selectedTodo, nextStatus)) {
     refreshHubSnapshot();
     state_.todoSyncRequested = true;
+    state_.saveTodosPending = true;
     markUiDirty();
   }
 }
@@ -1172,6 +1290,7 @@ void AppController::handleTodoDelete() {
   if (hub_.deleteTodoLocal(state_.selectedTodo)) {
     refreshHubSnapshot();
     state_.todoSyncRequested = true;
+    state_.saveTodosPending = true;
     const size_t count = hubSnapshot_.todoCount;
     if (count == 0) {
       state_.selectedTodo = 0;
@@ -1225,11 +1344,7 @@ void AppController::handleSystemClearMessages() {
 
   hub_.clearMessagesLocal();
   refreshHubSnapshot();
-  if (verifySdMounted()) {
-    if (storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount)) {
-      hub_.markMessagesPersisted();
-    }
-  }
+  state_.saveMessagesPending = true;
   state_.selectedMessage = 0;
   state_.messageBodyScrollLine = 0;
   state_.newMessageAlert = false;

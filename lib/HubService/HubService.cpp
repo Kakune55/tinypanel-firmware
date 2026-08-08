@@ -255,7 +255,7 @@ HubRequestResult HubService::syncTodoChanges(bool networkReady,
 
   HubTodo patches[MaxTodos];
   size_t patchCount = 0;
-  PendingTodoDelete deletes[MaxTodos];
+  HubTodoDelete deletes[MaxTodos];
   size_t deleteCount = 0;
   lockState();
   for (size_t i = 0; i < todoCount_; ++i) {
@@ -494,9 +494,21 @@ bool HubService::setTodos(const HubTodo* todos, size_t count) {
   todoCount_ = count < MaxTodos ? count : MaxTodos;
   for (size_t i = 0; i < todoCount_; ++i) {
     todos_[i] = todos[i];
-    todos_[i].dirty = false;
   }
   pendingTodoDeleteCount_ = 0;
+  unlockState();
+  return true;
+}
+
+bool HubService::setPendingTodoDeletes(const HubTodoDelete* deletes, size_t count) {
+  if (!deletes && count > 0) {
+    return false;
+  }
+  lockState();
+  pendingTodoDeleteCount_ = count < MaxTodos ? count : MaxTodos;
+  for (size_t i = 0; i < pendingTodoDeleteCount_; ++i) {
+    pendingTodoDeletes_[i] = deletes[i];
+  }
   unlockState();
   return true;
 }
@@ -518,6 +530,10 @@ void HubService::snapshot(HubStateSnapshot& out) const {
   out.todoCount = todoCount_;
   for (size_t i = 0; i < todoCount_; ++i) {
     out.todos[i] = todos_[i];
+  }
+  out.pendingTodoDeleteCount = pendingTodoDeleteCount_;
+  for (size_t i = 0; i < pendingTodoDeleteCount_; ++i) {
+    out.pendingTodoDeletes[i] = pendingTodoDeletes_[i];
   }
   unlockState();
 }
@@ -823,7 +839,10 @@ HubRequestResult HubService::fetchTodos() {
   for (size_t i = 0; i < nextCount; ++i) {
     bool pendingDelete = false;
     for (size_t deleteIndex = 0; deleteIndex < pendingTodoDeleteCount_; ++deleteIndex) {
-      pendingDelete = pendingDelete || pendingTodoDeletes_[deleteIndex].id == nextTodos[i].id;
+      if (pendingTodoDeletes_[deleteIndex].id == nextTodos[i].id) {
+        pendingTodoDeletes_[deleteIndex].version = nextTodos[i].version;
+        pendingDelete = true;
+      }
     }
     if (pendingDelete) {
       continue;
