@@ -108,7 +108,29 @@ bool batteryLogName(const char* name) {
   return (strncmp(name, "battery_", 8) == 0 && strstr(name, ".csv") != nullptr);
 }
 
+class RecursiveLock {
+ public:
+  explicit RecursiveLock(SemaphoreHandle_t mutex) : mutex_(mutex) {
+    if (mutex_) {
+      xSemaphoreTakeRecursive(mutex_, portMAX_DELAY);
+    }
+  }
+
+  ~RecursiveLock() {
+    if (mutex_) {
+      xSemaphoreGiveRecursive(mutex_);
+    }
+  }
+
+ private:
+  SemaphoreHandle_t mutex_;
+};
+
 }  // namespace
+
+AppStorage::AppStorage() {
+  messageMutex_ = xSemaphoreCreateRecursiveMutex();
+}
 
 bool AppStorage::begin(SdCardStorage& sd) {
   sd_ = &sd;
@@ -255,6 +277,7 @@ bool AppStorage::saveHubCredentials(const StoredHubCredentials& credentials) {
 }
 
 bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
+  RecursiveLock lock(messageMutex_);
   if (!isReady() || (!messages && count > 0)) {
     return false;
   }
@@ -282,10 +305,14 @@ bool AppStorage::saveMessages(const HubMessage* messages, size_t count) {
 
   const bool ok = sd_->writeBinaryAtomic(MessagesIndexPath, index, indexLen);
   heap_caps_free(index);
+  if (ok && !pruneMessageRecords(messages, limit)) {
+    Serial.println("Storage: stale message cleanup incomplete");
+  }
   return ok;
 }
 
 bool AppStorage::loadMessages(HubMessage* out, size_t maxCount, size_t& outCount) const {
+  RecursiveLock lock(messageMutex_);
   outCount = 0;
   if (!isReady() || !out || maxCount == 0) {
     return false;
@@ -400,6 +427,40 @@ bool AppStorage::loadMessageRecord(int id, HubMessage& message) const {
   }
 
   sd_->freeBuffer(data);
+  return ok;
+}
+
+bool AppStorage::pruneMessageRecords(const HubMessage* messages, size_t count) const {
+  const String directory = String(sd_->mountPoint()) + MessagesDir;
+  DIR* dir = opendir(directory.c_str());
+  if (!dir) {
+    return false;
+  }
+
+  bool ok = true;
+  while (dirent* entry = readdir(dir)) {
+    int id = 0;
+    char trailing = '\0';
+    if (sscanf(entry->d_name, "msg_%d.bin%c", &id, &trailing) != 1 || id <= 0) {
+      continue;
+    }
+
+    bool retained = false;
+    for (size_t i = 0; i < count; ++i) {
+      if (messages[i].id == id) {
+        retained = true;
+        break;
+      }
+    }
+    if (retained) {
+      continue;
+    }
+
+    char path[72];
+    snprintf(path, sizeof(path), "%s/%s", MessagesDir, entry->d_name);
+    ok = sd_->remove(path) && ok;
+  }
+  closedir(dir);
   return ok;
 }
 

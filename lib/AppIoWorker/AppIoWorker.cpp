@@ -26,10 +26,15 @@ const char* jobName(AppIoJobType type) {
   return "unknown";
 }
 
+bool persistMessages(const HubMessage* messages, size_t count, void* context) {
+  AppStorage* storage = static_cast<AppStorage*>(context);
+  return storage && storage->isReady() && storage->saveMessages(messages, count);
+}
+
 }  // namespace
 
-AppIoWorker::AppIoWorker(WifiManager& wifi, TimeSync& timeSync, HubService& hub)
-    : wifi_(wifi), timeSync_(timeSync), hub_(hub) {}
+AppIoWorker::AppIoWorker(WifiManager& wifi, TimeSync& timeSync, HubService& hub, AppStorage& storage)
+    : wifi_(wifi), timeSync_(timeSync), hub_(hub), storage_(storage) {}
 
 bool AppIoWorker::begin(uint32_t stackBytes, UBaseType_t priority, BaseType_t core) {
   if (task_) {
@@ -159,7 +164,8 @@ AppIoResult AppIoWorker::execute(AppIoRequest& request) {
       result.operationOk = result.request.ok;
       break;
     case AppIoJobType::HubMessages:
-      result.request = hub_.pollMessages(request.force, wifi_.isConnected(), nullptr);
+      result.request = hub_.pollMessages(
+          request.force, wifi_.isConnected(), nullptr, millis(), persistMessages, &storage_);
       result.operationOk = result.request.ok;
       break;
     case AppIoJobType::HubWeather:

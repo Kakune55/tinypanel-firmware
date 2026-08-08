@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include "BatteryMonitor.h"
 #include "HubTypes.h"
 #include "RtcClock.h"
@@ -57,6 +60,7 @@ class AppStorage {
  public:
   static constexpr size_t MaxBatteryHistoryPoints = 240;
 
+  AppStorage();
   bool begin(SdCardStorage& sd);
   bool isReady() const;
 
@@ -94,6 +98,7 @@ class AppStorage {
   String messagePath(int id) const;
   bool saveMessageRecord(const HubMessage& message) const;
   bool loadMessageRecord(int id, HubMessage& message) const;
+  bool pruneMessageRecords(const HubMessage* messages, size_t count) const;
   String batteryLogPath(const RtcDateTime& now) const;
   String systemLogPath(const RtcDateTime& now) const;
   String timestampOrUptime(const RtcDateTime& now, uint32_t uptimeS) const;
@@ -106,4 +111,5 @@ class AppStorage {
 
   SdCardStorage* sd_ = nullptr;
   bool ready_ = false;
+  mutable SemaphoreHandle_t messageMutex_ = nullptr;
 };

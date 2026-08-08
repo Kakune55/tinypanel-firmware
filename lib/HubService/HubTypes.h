@@ -37,6 +37,8 @@ struct HubRequestResult {
   bool attempted = false;
   bool ok = false;
   int statusCode = 0;
+  bool changed = false;
+  bool persisted = false;
 };
 
 struct HubMessage {

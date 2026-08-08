@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "HubService.h"
+#include "AppStorage.h"
 #include "RtcClock.h"
 #include "TimeSync.h"
 #include "WifiManager.h"
@@ -43,7 +44,7 @@ struct AppIoResult {
 
 class AppIoWorker {
  public:
-  AppIoWorker(WifiManager& wifi, TimeSync& timeSync, HubService& hub);
+  AppIoWorker(WifiManager& wifi, TimeSync& timeSync, HubService& hub, AppStorage& storage);
 
   bool begin(uint32_t stackBytes = 12288, UBaseType_t priority = 1, BaseType_t core = 0);
   bool submit(const AppIoRequest& request);
@@ -59,6 +60,7 @@ class AppIoWorker {
   WifiManager& wifi_;
   TimeSync& timeSync_;
   HubService& hub_;
+  AppStorage& storage_;
   mutable SemaphoreHandle_t mutex_ = nullptr;
   TaskHandle_t task_ = nullptr;
   AppIoRequest request_;

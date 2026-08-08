@@ -140,7 +140,7 @@ AppController::AppController(const AppControllerConfig& config,
       timeSync_(timeSync),
       wifi_(wifi),
       ui_(ui),
-      ioWorker_(wifi, timeSync, hub) {}
+      ioWorker_(wifi, timeSync, hub, storage) {}
 
 void AppController::setBootScreenActive(bool active) {
   bootScreenActive_ = active;
@@ -796,7 +796,6 @@ void AppController::handleNtpResult(const AppIoResult& result) {
 }
 
 void AppController::handleHubResult(const AppIoResult& result, State::IoOwner owner) {
-  const HubStateSnapshot previous = hubSnapshot_;
   refreshHubSnapshot();
 
   if (result.type == AppIoJobType::HubHello) {
@@ -833,16 +832,9 @@ void AppController::handleHubResult(const AppIoResult& result, State::IoOwner ow
                     static_cast<unsigned>(state_.hubHelloFailureCount));
     }
   } else if (result.type == AppIoJobType::HubMessages && result.request.attempted) {
-    bool changed = previous.messageCount != hubSnapshot_.messageCount;
-    for (size_t i = 0; !changed && i < hubSnapshot_.messageCount; ++i) {
-      changed = previous.messages[i].id != hubSnapshot_.messages[i].id;
-    }
-    if (changed) {
+    if (result.request.changed) {
       state_.selectedMessage = 0;
       state_.messageBodyScrollLine = 0;
-      if (verifySdMounted()) {
-        storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount);
-      }
       if (state_.page != DesktopClockPage::Message) {
         state_.pendingNewMessageAlert = true;
       }
@@ -1088,7 +1080,9 @@ void AppController::handleMessageDelete() {
 
   refreshHubSnapshot();
   if (verifySdMounted()) {
-    storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount);
+    if (storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount)) {
+      hub_.markMessagesPersisted();
+    }
   }
   const size_t nextCount = hubSnapshot_.messageCount;
   if (nextCount == 0) {
@@ -1210,7 +1204,9 @@ void AppController::handleSystemClearMessages() {
   hub_.clearMessagesLocal();
   refreshHubSnapshot();
   if (verifySdMounted()) {
-    storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount);
+    if (storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount)) {
+      hub_.markMessagesPersisted();
+    }
   }
   state_.selectedMessage = 0;
   state_.messageBodyScrollLine = 0;

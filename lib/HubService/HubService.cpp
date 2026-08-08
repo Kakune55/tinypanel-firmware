@@ -194,13 +194,15 @@ HubRequestResult HubService::syncTelemetry(const HubTelemetrySnapshot& snapshot,
 HubRequestResult HubService::pollMessages(bool force,
                                           bool networkReady,
                                           HubStateChangedCallback onStateChanged,
-                                          uint32_t nowMs) {
+                                          uint32_t nowMs,
+                                          HubMessagesPersistCallback persist,
+                                          void* persistContext) {
   if (!messagePollDue(force, nowMs) || !isConfigured() || !networkReady) {
     return {};
   }
 
   beginRequest(nowMs, onStateChanged);
-  HubRequestResult result = syncSubscription();
+  HubRequestResult result = syncSubscription(persist, persistContext);
   lastMessagePollMs_ = nowMs;
   completeRequest(result, nowMs);
   return result;
@@ -278,6 +280,7 @@ bool HubService::setMessages(const HubMessage* messages, size_t count) {
   for (size_t i = 0; i < messageCount_; ++i) {
     messages_[i] = messages[i];
   }
+  messagesDurable_ = true;
   unlockState();
   return true;
 }
@@ -293,6 +296,7 @@ bool HubService::deleteMessageLocal(size_t index) {
   }
   --messageCount_;
   messages_[messageCount_] = {};
+  messagesDurable_ = false;
   unlockState();
   return true;
 }
@@ -303,6 +307,13 @@ void HubService::clearMessagesLocal() {
     messages_[i] = {};
   }
   messageCount_ = 0;
+  messagesDurable_ = false;
+  unlockState();
+}
+
+void HubService::markMessagesPersisted() {
+  lockState();
+  messagesDurable_ = true;
   unlockState();
 }
 
@@ -442,7 +453,7 @@ HubHelloResult HubService::sendHello() {
   return result;
 }
 
-HubRequestResult HubService::syncSubscription() {
+HubRequestResult HubService::syncSubscription(HubMessagesPersistCallback persist, void* persistContext) {
   char path[48];
   const int pathLen = snprintf(path, sizeof(path), "/device/messages?limit=%u",
                                static_cast<unsigned>(messageLimit_));
@@ -468,6 +479,17 @@ HubRequestResult HubService::syncSubscription() {
     return result;
   }
 
+  HubMessage nextMessages[MaxMessages];
+  size_t nextCount = 0;
+  bool wasDurable = false;
+  lockState();
+  nextCount = messageCount_;
+  for (size_t i = 0; i < messageCount_; ++i) {
+    nextMessages[i] = messages_[i];
+  }
+  wasDurable = messagesDurable_;
+  unlockState();
+
   for (JsonObjectConst item : messages) {
     if (ackCount >= MaxMessages) {
       break;
@@ -477,8 +499,34 @@ HubRequestResult HubService::syncSubscription() {
       ok = false;
       continue;
     }
-    storeMessage(message);
+    storeMessageIn(nextMessages, nextCount, message);
     ackIds[ackCount++] = message.id;
+  }
+
+  lockState();
+  result.changed = !sameMessages(messages_, messageCount_, nextMessages, nextCount);
+  unlockState();
+
+  const bool needsPersistence = result.changed || !wasDurable;
+  bool persisted = !needsPersistence;
+  if (needsPersistence && persist) {
+    persisted = persist(nextMessages, nextCount, persistContext);
+  }
+  result.persisted = persisted;
+
+  lockState();
+  if (result.changed) {
+    messageCount_ = nextCount;
+    for (size_t i = 0; i < nextCount; ++i) {
+      messages_[i] = nextMessages[i];
+    }
+  }
+  messagesDurable_ = persisted;
+  unlockState();
+
+  if (!persisted) {
+    result.ok = false;
+    return result;
   }
 
   if (ackCount > 0) {
@@ -664,17 +712,40 @@ HubRequestResult HubService::ackMessages(const int* ids, size_t count) {
 
 void HubService::storeMessage(const HubMessage& message) {
   lockState();
-  if (hasMessage(message.id)) {
-    unlockState();
-    return;
+  storeMessageIn(messages_, messageCount_, message);
+  messagesDurable_ = false;
+  unlockState();
+}
+
+void HubService::storeMessageIn(HubMessage* messages, size_t& count, const HubMessage& message) const {
+  for (size_t i = 0; i < count; ++i) {
+    if (messages[i].id == message.id) {
+      return;
+    }
   }
 
-  const size_t insert = messageCount_ < MaxMessages ? messageCount_++ : MaxMessages - 1;
+  const size_t insert = count < MaxMessages ? count++ : MaxMessages - 1;
   for (size_t i = insert; i > 0; --i) {
-    messages_[i] = messages_[i - 1];
+    messages[i] = messages[i - 1];
   }
-  messages_[0] = message;
-  unlockState();
+  messages[0] = message;
+}
+
+bool HubService::sameMessages(const HubMessage* left,
+                              size_t leftCount,
+                              const HubMessage* right,
+                              size_t rightCount) const {
+  if (leftCount != rightCount) {
+    return false;
+  }
+  for (size_t i = 0; i < leftCount; ++i) {
+    if (left[i].id != right[i].id || left[i].channel != right[i].channel ||
+        left[i].author != right[i].author || left[i].body != right[i].body ||
+        left[i].createdAt != right[i].createdAt) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool HubService::hasMessage(int id) const {

@@ -20,6 +20,7 @@ struct HubHelloResult : HubRequestResult {
 };
 
 using HubStateChangedCallback = void (*)();
+using HubMessagesPersistCallback = bool (*)(const HubMessage* messages, size_t count, void* context);
 
 enum class HubSyncState {
   Idle,
@@ -76,7 +77,9 @@ public:
   HubRequestResult pollMessages(bool force,
                                 bool networkReady,
                                 HubStateChangedCallback onStateChanged = nullptr,
-                                uint32_t nowMs = millis());
+                                uint32_t nowMs = millis(),
+                                HubMessagesPersistCallback persist = nullptr,
+                                void* persistContext = nullptr);
   HubRequestResult pollWeather(bool force,
                                bool networkReady,
                                HubStateChangedCallback onStateChanged = nullptr,
@@ -96,6 +99,7 @@ public:
   bool setMessages(const HubMessage* messages, size_t count);
   bool deleteMessageLocal(size_t index);
   void clearMessagesLocal();
+  void markMessagesPersisted();
   const HubWeather& weather() const;
   bool setWeather(const HubWeather& weather);
   size_t todoCount() const;
@@ -107,13 +111,15 @@ public:
 private:
   HubRequestResult sendTelemetry(const HubTelemetrySnapshot& snapshot);
   HubHelloResult sendHello();
-  HubRequestResult syncSubscription();
+  HubRequestResult syncSubscription(HubMessagesPersistCallback persist, void* persistContext);
   HubRequestResult fetchWeather();
   HubRequestResult fetchTodos();
   bool parseWeather(JsonVariantConst source, HubWeather& weather) const;
   bool parseMessage(JsonObjectConst item, HubMessage& out) const;
   HubRequestResult ackMessages(const int* ids, size_t count);
   void storeMessage(const HubMessage& message);
+  void storeMessageIn(HubMessage* messages, size_t& count, const HubMessage& message) const;
+  bool sameMessages(const HubMessage* left, size_t leftCount, const HubMessage* right, size_t rightCount) const;
   bool hasMessage(int id) const;
 
   enum class AuthMode {
@@ -173,6 +179,7 @@ private:
   uint8_t messageLimit_ = MaxMessages;
   HubMessage messages_[MaxMessages];
   size_t messageCount_ = 0;
+  bool messagesDurable_ = false;
   HubWeather weather_;
   uint8_t todoLimit_ = MaxTodos;
   HubTodo todos_[MaxTodos];
