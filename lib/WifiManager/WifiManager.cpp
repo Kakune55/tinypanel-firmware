@@ -138,7 +138,7 @@ bool WifiManager::connect(uint32_t timeoutMs) {
 }
 
 void WifiManager::disconnect(bool radioOff) {
-  WiFi.disconnect(true, radioOff);
+  WiFi.disconnect(radioOff, false);
   if (radioOff) {
     WiFi.mode(WIFI_OFF);
   }

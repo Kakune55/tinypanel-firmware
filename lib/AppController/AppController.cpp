@@ -54,6 +54,10 @@ bool batteryInFullHold(const BatteryStatus& battery) {
   return battery.charging || battery.percentFloat >= kBatteryFullHoldPercent;
 }
 
+bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
+  return deadlineMs == 0 || static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
+
 bool parseCanvasColor(const char* token, bool& black) {
   if (token == nullptr) {
     return false;
@@ -176,6 +180,9 @@ bool AppController::ntpSynced() const {
 
 bool AppController::beginBackgroundTasks() {
   refreshHubSnapshot();
+  state_.wifiWasConnected = wifi_.isConnected();
+  state_.hubHelloPending = hub_.canHello();
+  state_.nextHubHelloMs = millis();
   return ioWorker_.begin();
 }
 
@@ -354,6 +361,7 @@ void AppController::loopOnce() {
   handlePendingKeyClick();
   handleIoResult();
   handleWifi();
+  handleHubRegistration();
   readRtc(false);
   const bool didInitialNtpWork = !ioWorker_.isBusy() && runInitialNtpSyncStep();
   runScheduledTasks(false);
@@ -457,9 +465,7 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.systemActionFocused = state_.systemActionFocused;
   model.wifiConnected = wifi_.isConnected();
   model.wifiDisabled = state_.wifiDisabled;
-  model.wifiAutoDisabled = state_.wifiAutoDisabled;
   model.wifiFailureCount = state_.wifiFailureCount;
-  model.wifiMaxFailures = config_.wifiMaxFailures;
   model.wifiRssi = wifi_.rssi();
   model.wifiIp = wifi_.isConnected() ? wifi_.ipAddress() : "";
   model.wifiSsid = wifi_.ssid();
@@ -489,8 +495,31 @@ DesktopClockUiModel AppController::buildUiModel() const {
 
 void AppController::handleWifi() {
   const uint32_t now = millis();
-  if (!config_.wifiConfigured || state_.wifiDisabled || wifi_.isConnected() ||
-      ioWorker_.isBusy() || now - state_.lastWifiRetryMs < config_.wifiRetryMs) {
+  if (state_.wifiDisconnectPending && !ioWorker_.isBusy()) {
+    wifi_.disconnect(true);
+    state_.wifiDisconnectPending = false;
+  }
+  const bool connected = wifi_.isConnected();
+  if (connected) {
+    if (!state_.wifiWasConnected) {
+      state_.wifiWasConnected = true;
+      state_.wifiFailureCount = 0;
+      state_.nextWifiRetryMs = 0;
+      wifi_.updateSignal();
+      markUiDirty();
+    }
+    return;
+  }
+
+  if (state_.wifiWasConnected) {
+    state_.wifiWasConnected = false;
+    state_.nextWifiRetryMs = now;
+    Serial.println("WiFi: connection lost, reconnect queued");
+    markUiDirty();
+  }
+
+  if (!config_.wifiConfigured || state_.wifiDisabled || ioWorker_.isBusy() ||
+      !deadlineReached(now, state_.nextWifiRetryMs)) {
     return;
   }
 
@@ -499,8 +528,40 @@ void AppController::handleWifi() {
   request.timeoutMs = 5000;
   if (submitIo(request, State::IoOwner::WifiReconnect)) {
     state_.lastWifiRetryMs = now;
+    state_.nextWifiRetryMs = 0;
     markUiDirty();
   }
+}
+
+void AppController::handleHubRegistration() {
+  const uint32_t now = millis();
+  if (!state_.hubHelloPending || !hub_.canHello() || !wifi_.isConnected() || state_.wifiDisabled ||
+      ioWorker_.isBusy() || !deadlineReached(now, state_.nextHubHelloMs)) {
+    return;
+  }
+
+  if (state_.rePairRequested && !state_.rePairPrepared) {
+    hub_.setDeviceSecret("");
+    hub_.setDeviceBinding(false, "", "");
+    state_.rePairPrepared = true;
+    refreshHubSnapshot();
+  }
+
+  AppIoRequest request;
+  request.type = AppIoJobType::HubHello;
+  if (submitIo(request,
+               state_.rePairRequested ? State::IoOwner::RePair : State::IoOwner::HubRegistration)) {
+    state_.nextHubHelloMs = 0;
+  }
+}
+
+uint32_t AppController::retryDelay(uint32_t baseMs, uint32_t maxMs, uint8_t failureCount) const {
+  uint32_t delayMs = baseMs;
+  const uint8_t shifts = failureCount > 0 ? min<uint8_t>(failureCount - 1, 6) : 0;
+  for (uint8_t i = 0; i < shifts && delayMs < maxMs; ++i) {
+    delayMs = delayMs > maxMs / 2 ? maxMs : delayMs * 2;
+  }
+  return min(delayMs, maxMs);
 }
 
 void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
@@ -677,7 +738,7 @@ void AppController::handleIoResult() {
     case AppIoJobType::HubWeather:
     case AppIoJobType::HubTodos:
     case AppIoJobType::HubTodoChanges:
-      handleHubResult(result);
+      handleHubResult(result, owner);
       break;
     case AppIoJobType::None:
       break;
@@ -697,16 +758,18 @@ void AppController::handleIoResult() {
 void AppController::handleWifiResult(const AppIoResult& result) {
   if (result.operationOk) {
     state_.wifiFailureCount = 0;
-    state_.wifiAutoDisabled = false;
+    state_.wifiWasConnected = true;
+    state_.nextWifiRetryMs = 0;
+    state_.hubHelloPending = hub_.canHello();
+    state_.nextHubHelloMs = millis();
     wifi_.updateSignal();
   } else if (state_.wifiFailureCount < 255) {
     ++state_.wifiFailureCount;
-    if (config_.wifiMaxFailures > 0 && state_.wifiFailureCount >= config_.wifiMaxFailures) {
-      state_.wifiDisabled = true;
-      state_.wifiAutoDisabled = true;
-      wifi_.disconnect(true);
-      Serial.println("WiFi: auto disabled after repeated failures");
-    }
+    const uint32_t delayMs = retryDelay(config_.wifiRetryMs, config_.wifiRetryMaxMs, state_.wifiFailureCount);
+    state_.nextWifiRetryMs = millis() + delayMs;
+    Serial.printf("WiFi: retry in %lu ms after failure %u\n",
+                  static_cast<unsigned long>(delayMs),
+                  static_cast<unsigned>(state_.wifiFailureCount));
   }
 }
 
@@ -732,18 +795,42 @@ void AppController::handleNtpResult(const AppIoResult& result) {
   state_.ntpSyncFailed = !synced;
 }
 
-void AppController::handleHubResult(const AppIoResult& result) {
+void AppController::handleHubResult(const AppIoResult& result, State::IoOwner owner) {
   const HubStateSnapshot previous = hubSnapshot_;
   refreshHubSnapshot();
 
-  if (result.type == AppIoJobType::HubHello && result.hello.ok) {
-    StoredHubCredentials updated;
-    updated.bound = result.hello.bound;
-    snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", result.hello.deviceSecret.c_str());
-    snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", result.hello.bindCode.c_str());
-    snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", result.hello.name.c_str());
-    if (storage_.isReady()) {
-      storage_.saveHubCredentials(updated);
+  if (result.type == AppIoJobType::HubHello) {
+    if (result.hello.ok) {
+      const bool rePairCompleted = owner == State::IoOwner::RePair;
+      state_.hubHelloPending = state_.rePairRequested && !rePairCompleted;
+      state_.hubHelloFailureCount = 0;
+      state_.nextHubHelloMs = state_.hubHelloPending ? millis() : 0;
+      if (rePairCompleted) {
+        state_.rePairRequested = false;
+        state_.rePairPrepared = false;
+      }
+      StoredHubCredentials updated;
+      updated.bound = result.hello.bound;
+      snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", result.hello.deviceSecret.c_str());
+      snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", result.hello.bindCode.c_str());
+      snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", result.hello.name.c_str());
+      if (storage_.isReady()) {
+        storage_.saveHubCredentials(updated);
+      }
+      if (state_.initialHubSyncStep == State::InitialHubSyncStep::Done) {
+        state_.initialHubSyncStep = State::InitialHubSyncStep::Telemetry;
+      }
+    } else {
+      if (state_.hubHelloFailureCount < 255) {
+        ++state_.hubHelloFailureCount;
+      }
+      const uint32_t delayMs = retryDelay(
+          config_.hubHelloRetryMs, config_.hubHelloRetryMaxMs, state_.hubHelloFailureCount);
+      state_.hubHelloPending = true;
+      state_.nextHubHelloMs = millis() + delayMs;
+      Serial.printf("Hub: hello retry in %lu ms after failure %u\n",
+                    static_cast<unsigned long>(delayMs),
+                    static_cast<unsigned>(state_.hubHelloFailureCount));
     }
   } else if (result.type == AppIoJobType::HubMessages && result.request.attempted) {
     bool changed = previous.messageCount != hubSnapshot_.messageCount;
@@ -895,10 +982,7 @@ void AppController::handleForcedRefresh() {
   }
   refreshSdStats(true);
   if (!wifi_.isConnected() && config_.wifiConfigured && !state_.wifiDisabled) {
-    AppIoRequest request;
-    request.type = AppIoJobType::WifiConnect;
-    request.timeoutMs = 8000;
-    submitIo(request, State::IoOwner::WifiReconnect);
+    state_.nextWifiRetryMs = millis();
   }
   queueScheduledTasks(true, true);
 }
@@ -1143,26 +1227,20 @@ void AppController::handleSystemWifiToggle() {
   }
 
   if (!state_.wifiDisabled || wifi_.isConnected()) {
-    wifi_.disconnect(true);
     state_.wifiDisabled = true;
-    state_.wifiAutoDisabled = false;
+    state_.wifiDisconnectPending = true;
+    state_.nextWifiRetryMs = 0;
     markUiDirty();
-    Serial.println("KEY: wifi off");
+    Serial.println("KEY: wifi off queued");
     return;
   }
 
   state_.wifiDisabled = false;
-  state_.wifiAutoDisabled = false;
+  state_.wifiDisconnectPending = false;
   state_.wifiFailureCount = 0;
   state_.lastWifiRetryMs = 0;
-  AppIoRequest request;
-  request.type = AppIoJobType::WifiConnect;
-  request.timeoutMs = 8000;
-  if (submitIo(request, State::IoOwner::WifiReconnect)) {
-    Serial.println("KEY: wifi on queued");
-  } else {
-    Serial.println("KEY: wifi on pending");
-  }
+  state_.nextWifiRetryMs = millis();
+  Serial.println("KEY: wifi on queued");
   markUiDirty();
 }
 
@@ -1172,23 +1250,17 @@ void AppController::handleSystemResetBattery() {
 }
 
 void AppController::handleSystemRePair() {
-  hub_.setDeviceSecret("");
-  hub_.setDeviceBinding(false, "", "");
-
-  if (storage_.isReady()) {
-    StoredHubCredentials cleared;
-    storage_.saveHubCredentials(cleared);
-  }
-
+  state_.rePairRequested = true;
+  state_.rePairPrepared = false;
+  state_.hubHelloPending = hub_.canHello();
+  state_.hubHelloFailureCount = 0;
+  state_.nextHubHelloMs = millis();
   markUiDirty();
   if (!wifi_.isConnected()) {
     Serial.println("KEY: re-pair pending (wifi offline)");
     return;
   }
-
-  AppIoRequest request;
-  request.type = AppIoJobType::HubHello;
-  submitIo(request, State::IoOwner::RePair);
+  Serial.println("KEY: re-pair queued");
   markUiDirty();
 }
 

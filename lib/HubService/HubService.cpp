@@ -67,6 +67,13 @@ bool HubService::isConfigured() const {
   return configured;
 }
 
+bool HubService::canHello() const {
+  lockState();
+  const bool available = baseUrl_.length() > 0;
+  unlockState();
+  return available;
+}
+
 const String& HubService::deviceId() const {
   return deviceId_;
 }

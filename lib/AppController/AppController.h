@@ -24,7 +24,9 @@ struct AppControllerConfig {
   uint32_t hubSyncWindowMs = 60000;
   uint8_t telemetryEveryHubSyncWindows = 5;
   uint32_t wifiRetryMs = 30000;
-  uint8_t wifiMaxFailures = 3;
+  uint32_t wifiRetryMaxMs = 10UL * 60UL * 1000UL;
+  uint32_t hubHelloRetryMs = 15000;
+  uint32_t hubHelloRetryMaxMs = 10UL * 60UL * 1000UL;
   uint32_t ntpRetryMs = 10UL * 60UL * 1000UL;
   uint32_t ntpUnsyncedRetryMs = 5UL * 60UL * 1000UL;
   uint32_t keyDoubleClickMs = 350;
@@ -104,6 +106,7 @@ class AppController {
       InitialHub,
       Scheduled,
       RePair,
+      HubRegistration,
     };
 
     BatteryStatus battery;
@@ -117,8 +120,9 @@ class AppController {
     bool sdMounted = false;
     bool wifiConfigFromSd = false;
     bool wifiDisabled = false;
-    bool wifiAutoDisabled = false;
     uint8_t wifiFailureCount = 0;
+    bool wifiWasConnected = false;
+    bool wifiDisconnectPending = false;
     bool batteryCurveFromSd = false;
     bool messagesRestoredFromSd = false;
     bool uiDirty = true;
@@ -131,6 +135,8 @@ class AppController {
     uint32_t sdCardTotalMb = 0;
     uint32_t sdCardUsedMb = 0;
     uint32_t lastWifiRetryMs = 0;
+    uint32_t nextWifiRetryMs = 0;
+    uint32_t nextHubHelloMs = 0;
     uint32_t lastNtpAttemptMs = 0;
     uint32_t lastHubSyncWindowMs = 0;
     uint32_t pendingKeyClickMs = 0;
@@ -160,6 +166,10 @@ class AppController {
     char serialCanvasLine[192] = {};
     size_t serialCanvasLineLen = 0;
     IoOwner ioOwner = IoOwner::None;
+    bool hubHelloPending = false;
+    bool rePairRequested = false;
+    bool rePairPrepared = false;
+    uint8_t hubHelloFailureCount = 0;
   };
 
   String formatRtcTimestamp(const RtcDateTime& dt) const;
@@ -169,11 +179,13 @@ class AppController {
   void handleIoResult();
   void handleWifiResult(const AppIoResult& result);
   void handleNtpResult(const AppIoResult& result);
-  void handleHubResult(const AppIoResult& result);
+  void handleHubResult(const AppIoResult& result, State::IoOwner owner);
   void refreshHubSnapshot();
   void advanceInitialHubStep();
   void advanceScheduledStep(bool todoSyncOk = true);
   void handleWifi();
+  void handleHubRegistration();
+  uint32_t retryDelay(uint32_t baseMs, uint32_t maxMs, uint8_t failureCount) const;
   void readRtc(bool force = false);
   bool runInitialNtpSyncStep();
   void runScheduledTasks(bool force = false, bool includeTelemetry = false);

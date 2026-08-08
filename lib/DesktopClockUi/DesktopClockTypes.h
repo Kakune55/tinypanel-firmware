@@ -52,9 +52,7 @@ struct DesktopClockUiModel {
   bool systemActionFocused = false;
   bool wifiConnected = false;
   bool wifiDisabled = false;
-  bool wifiAutoDisabled = false;
   uint8_t wifiFailureCount = 0;
-  uint8_t wifiMaxFailures = 0;
   int wifiRssi = 0;
   String wifiIp;
   String wifiSsid;

@@ -677,18 +677,13 @@ void drawSystemPage(RlcdDisplay& display, StatusBar& statusBar, const DesktopClo
     char clearNote[24];
     if (!model.wifiConfigured) {
       snprintf(wifiNote, sizeof(wifiNote), "no credentials");
-    } else if (model.wifiAutoDisabled) {
-      snprintf(wifiNote, sizeof(wifiNote), "auto off fail %u/%u",
-               static_cast<unsigned>(model.wifiFailureCount),
-               static_cast<unsigned>(model.wifiMaxFailures));
     } else if (model.wifiDisabled) {
       snprintf(wifiNote, sizeof(wifiNote), "offline mode");
     } else if (model.wifiConnected) {
       snprintf(wifiNote, sizeof(wifiNote), "connected");
     } else {
-      snprintf(wifiNote, sizeof(wifiNote), "retry fail %u/%u",
-               static_cast<unsigned>(model.wifiFailureCount),
-               static_cast<unsigned>(model.wifiMaxFailures));
+      snprintf(wifiNote, sizeof(wifiNote), "retry failures %u",
+               static_cast<unsigned>(model.wifiFailureCount));
     }
     snprintf(clearNote, sizeof(clearNote), "%u cached messages", static_cast<unsigned>(model.messageCount));
 

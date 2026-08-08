@@ -57,6 +57,7 @@ public:
   void configureTodos(uint32_t pollIntervalMs, uint8_t limit = MaxTodos);
   void setVerbose(bool verbose);
   bool isConfigured() const;
+  bool canHello() const;
   const String& deviceId() const;
   bool isBound() const;
   const String& bindCode() const;
