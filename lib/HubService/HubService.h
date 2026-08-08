@@ -102,13 +102,19 @@ private:
 
   HubRequestResult postJson(AuthMode auth, const char* path, const char* body, size_t bodyLen, JsonDocument* response, const char* label);
   HubRequestResult getJson(AuthMode auth, const char* path, JsonDocument& doc, const char* label);
+  HubRequestResult getJsonFiltered(AuthMode auth,
+                                   const char* path,
+                                   JsonDocument& doc,
+                                   const char* label,
+                                   JsonDocument& filter);
   HubRequestResult requestJson(const char* method,
                                AuthMode auth,
                                const char* path,
                                const char* body,
                                size_t bodyLen,
                                JsonDocument* response,
-                               const char* label);
+                               const char* label,
+                               JsonDocument* filter = nullptr);
   bool telemetryDue(bool force, uint32_t nowMs) const;
   bool messagePollDue(bool force, uint32_t nowMs) const;
   bool weatherPollDue(bool force, uint32_t nowMs) const;

@@ -424,7 +424,10 @@ HubRequestResult HubService::syncSubscription() {
 
 HubRequestResult HubService::fetchWeather() {
   jsonDoc_.clear();
-  HubRequestResult result = getJson(AuthMode::Device, "/device/snapshot?include=weather", jsonDoc_, "device snapshot");
+  responseDoc_.clear();
+  responseDoc_["weather"] = true;
+  HubRequestResult result =
+      getJsonFiltered(AuthMode::Device, "/device/snapshot?include=weather", jsonDoc_, "device snapshot", responseDoc_);
   if (!result.ok) {
     return result;
   }
@@ -621,13 +624,22 @@ HubRequestResult HubService::getJson(AuthMode auth, const char* path, JsonDocume
   return requestJson("GET", auth, path, nullptr, 0, &doc, label);
 }
 
+HubRequestResult HubService::getJsonFiltered(AuthMode auth,
+                                             const char* path,
+                                             JsonDocument& doc,
+                                             const char* label,
+                                             JsonDocument& filter) {
+  return requestJson("GET", auth, path, nullptr, 0, &doc, label, &filter);
+}
+
 HubRequestResult HubService::requestJson(const char* method,
                                          AuthMode auth,
                                          const char* path,
                                          const char* body,
                                          size_t bodyLen,
                                          JsonDocument* response,
-                                         const char* label) {
+                                         const char* label,
+                                         JsonDocument* filter) {
   HubRequestResult result;
   result.attempted = true;
   WiFiClient* requestClient = &client_;
@@ -661,6 +673,8 @@ HubRequestResult HubService::requestJson(const char* method,
   if (body) {
     http.addHeader("Content-Type", "application/json");
   }
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Connection", "close");
 
   if (strcmp(method, "POST") == 0) {
     result.statusCode = http.POST(reinterpret_cast<uint8_t*>(const_cast<char*>(body ? body : "{}")),
@@ -673,16 +687,30 @@ HubRequestResult HubService::requestJson(const char* method,
     result.statusCode = http.GET();
   }
   result.ok = result.statusCode >= 200 && result.statusCode < 300;
+  String responseBody;
+  bool responseBodyLoaded = false;
   if (result.ok && response) {
-    DeserializationError error = deserializeJson(*response, http.getStream());
+    const int contentLength = http.getSize();
+    if (contentLength > 0) {
+      responseBody.reserve(static_cast<size_t>(contentLength) + 1);
+    }
+    responseBody = http.getString();
+    responseBodyLoaded = true;
+    DeserializationError error = filter ? deserializeJson(*response, responseBody, DeserializationOption::Filter(*filter))
+                                        : deserializeJson(*response, responseBody);
     result.ok = !error;
     if (error) {
-      Serial.printf("Hub: %s JSON failed (%s)\n", label, error.c_str());
+      Serial.printf("Hub: %s JSON failed (%s, %u bytes)\n",
+                    label,
+                    error.c_str(),
+                    static_cast<unsigned>(responseBody.length()));
     }
   }
   Serial.printf("Hub: %s %s %s (%d)\n", label, method, result.ok ? "ok" : "failed", result.statusCode);
   if (verbose_ && !result.ok) {
-    const String responseBody = http.getString();
+    if (!responseBodyLoaded) {
+      responseBody = http.getString();
+    }
     Serial.printf("Hub: %s response: %.160s\n", label, responseBody.c_str());
   }
   http.end();
