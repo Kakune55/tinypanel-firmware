@@ -343,6 +343,8 @@ void setup() {
 
   bootLog("ui: start desktop");
   storageLog("ui", "start desktop");
+  const bool ioWorkerOk = controller.beginBackgroundTasks();
+  bootLogf("rtos io: %s", ioWorkerOk ? "ready" : "failed");
   controller.setBootScreenActive(false);
   controller.renderUi();
 }

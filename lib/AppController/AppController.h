@@ -5,6 +5,7 @@
 #include "BatteryRuntimeEstimator.h"
 #include "BatteryMonitor.h"
 #include "AppStorage.h"
+#include "AppIoWorker.h"
 #include "Button.h"
 #include "DesktopClockUi.h"
 #include "HubService.h"
@@ -61,6 +62,7 @@ class AppController {
   void setStorageConfigStatus(bool wifiFromSd, bool batteryCurveFromSd, bool messagesRestoredFromSd);
   bool sdMounted() const;
   bool ntpSynced() const;
+  bool beginBackgroundTasks();
 
   void readSensors(bool force = false);
   bool trySyncTime(bool force = false);
@@ -93,6 +95,15 @@ class AppController {
       Todos,
       Weather,
       Telemetry,
+    };
+
+    enum class IoOwner : uint8_t {
+      None,
+      WifiReconnect,
+      InitialNtp,
+      InitialHub,
+      Scheduled,
+      RePair,
     };
 
     BatteryStatus battery;
@@ -148,14 +159,20 @@ class AppController {
     uint32_t lastSerialCanvasInputMs = 0;
     char serialCanvasLine[192] = {};
     size_t serialCanvasLineLen = 0;
+    IoOwner ioOwner = IoOwner::None;
   };
-
-  static void handleHubStateChanged();
 
   String formatRtcTimestamp(const RtcDateTime& dt) const;
   String makeBootId(const RtcDateTime& dt) const;
   DesktopClockUiModel buildUiModel() const;
-  void renderHubState();
+  bool submitIo(const AppIoRequest& request, State::IoOwner owner);
+  void handleIoResult();
+  void handleWifiResult(const AppIoResult& result);
+  void handleNtpResult(const AppIoResult& result);
+  void handleHubResult(const AppIoResult& result);
+  void refreshHubSnapshot();
+  void advanceInitialHubStep();
+  void advanceScheduledStep(bool todoSyncOk = true);
   void handleWifi();
   void readRtc(bool force = false);
   bool runInitialNtpSyncStep();
@@ -215,6 +232,8 @@ class AppController {
   TimeSync& timeSync_;
   WifiManager& wifi_;
   DesktopClockUi& ui_;
+  AppIoWorker ioWorker_;
+  HubStateSnapshot hubSnapshot_;
   BatteryRuntimeEstimator batteryRuntime_;
   bool bootScreenActive_ = false;
   State state_;

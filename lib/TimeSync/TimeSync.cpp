@@ -15,22 +15,28 @@ bool TimeSync::begin(const char* timezone, const char* ntp1, const char* ntp2, c
 
 bool TimeSync::syncToRtc(RtcClock& rtc, uint32_t timeoutMs) {
   RtcDateTime dateTime;
-  const uint32_t startMs = millis();
+  if (!waitForTime(dateTime, timeoutMs)) {
+    return false;
+  }
+  if (rtc.write(dateTime)) {
+    Serial.printf("NTP: RTC updated %04u-%02u-%02u %02u:%02u:%02u\n",
+                  dateTime.year,
+                  dateTime.month,
+                  dateTime.day,
+                  dateTime.hour,
+                  dateTime.minute,
+                  dateTime.second);
+    return true;
+  }
+  Serial.println("NTP: RTC write failed");
+  return false;
+}
 
+bool TimeSync::waitForTime(RtcDateTime& dateTime, uint32_t timeoutMs) {
+  const uint32_t startMs = millis();
   while (millis() - startMs < timeoutMs) {
     if (getLocalRtcDateTime(dateTime)) {
-      if (rtc.write(dateTime)) {
-        Serial.printf("NTP: RTC updated %04u-%02u-%02u %02u:%02u:%02u\n",
-                      dateTime.year,
-                      dateTime.month,
-                      dateTime.day,
-                      dateTime.hour,
-                      dateTime.minute,
-                      dateTime.second);
-        return true;
-      }
-      Serial.println("NTP: RTC write failed");
-      return false;
+      return true;
     }
     delay(250);
   }

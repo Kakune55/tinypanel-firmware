@@ -5,6 +5,9 @@
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include "HubTypes.h"
 
 struct HubHelloResult : HubRequestResult {
@@ -24,11 +27,27 @@ enum class HubSyncState {
   Failed,
 };
 
+struct HubStateSnapshot {
+  bool configured = false;
+  bool bound = false;
+  bool syncing = false;
+  bool failed = false;
+  String deviceId;
+  String bindCode;
+  String deviceName;
+  HubMessage messages[kHubMaxMessages];
+  size_t messageCount = 0;
+  HubWeather weather;
+  HubTodo todos[kHubMaxTodos];
+  size_t todoCount = 0;
+};
+
 class HubService {
 public:
   static constexpr size_t MaxMessages = kHubMaxMessages;
   static constexpr size_t MaxTodos = kHubMaxTodos;
 
+  HubService();
   void begin(const char* baseUrl, const char* deviceSecret, const char* deviceId);
   void setDeviceSecret(const char* deviceSecret);
   void setDeviceBinding(bool bound, const char* bindCode, const char* name);
@@ -82,6 +101,7 @@ public:
   const HubTodo* todos() const;
   const HubTodo* todoAt(size_t index) const;
   bool setTodos(const HubTodo* todos, size_t count);
+  void snapshot(HubStateSnapshot& out) const;
 
 private:
   HubRequestResult sendTelemetry(const HubTelemetrySnapshot& snapshot);
@@ -124,6 +144,8 @@ private:
   bool urlEncode(const char* value, char* out, size_t outSize) const;
   bool timeReached(uint32_t nowMs, uint32_t targetMs) const;
   bool hasUsableCredential(const char* value) const;
+  void lockState() const;
+  void unlockState() const;
 
   String baseUrl_;
   String deviceSecret_;
@@ -158,4 +180,5 @@ private:
   WiFiClientSecure secureClient_;
   JsonDocument jsonDoc_;
   JsonDocument responseDoc_;
+  mutable SemaphoreHandle_t stateMutex_ = nullptr;
 };

@@ -27,7 +27,12 @@ bool hasUsableSecret(const String& value) {
 
 }  // namespace
 
+HubService::HubService() {
+  stateMutex_ = xSemaphoreCreateRecursiveMutex();
+}
+
 void HubService::begin(const char* baseUrl, const char* deviceSecret, const char* deviceId) {
+  lockState();
   baseUrl_ = baseUrl ? baseUrl : "";
   deviceSecret_ = deviceSecret ? deviceSecret : "";
   deviceId_ = deviceId ? deviceId : "tinypanel-001";
@@ -37,21 +42,29 @@ void HubService::begin(const char* baseUrl, const char* deviceSecret, const char
   while (baseUrl_.endsWith("/")) {
     baseUrl_.remove(baseUrl_.length() - 1);
   }
+  unlockState();
 }
 
 void HubService::setDeviceSecret(const char* deviceSecret) {
+  lockState();
   deviceSecret_ = deviceSecret ? deviceSecret : "";
   deviceSecret_.trim();
+  unlockState();
 }
 
 void HubService::setDeviceBinding(bool bound, const char* bindCode, const char* name) {
+  lockState();
   bound_ = bound;
   bindCode_ = bindCode ? bindCode : "";
   deviceName_ = name ? name : "";
+  unlockState();
 }
 
 bool HubService::isConfigured() const {
-  return baseUrl_.length() > 0 && hasUsableCredential(deviceSecret_.c_str());
+  lockState();
+  const bool configured = baseUrl_.length() > 0 && hasUsableCredential(deviceSecret_.c_str());
+  unlockState();
+  return configured;
 }
 
 const String& HubService::deviceId() const {
@@ -59,7 +72,10 @@ const String& HubService::deviceId() const {
 }
 
 bool HubService::isBound() const {
-  return bound_;
+  lockState();
+  const bool bound = bound_;
+  unlockState();
+  return bound;
 }
 
 const String& HubService::bindCode() const {
@@ -101,23 +117,33 @@ void HubService::setVerbose(bool verbose) {
 }
 
 bool HubService::isSyncing() const {
-  return syncState_ == HubSyncState::Syncing;
+  lockState();
+  const bool syncing = syncState_ == HubSyncState::Syncing;
+  unlockState();
+  return syncing;
 }
 
 bool HubService::hasFailed() const {
-  return syncState_ == HubSyncState::Failed;
+  lockState();
+  const bool failed = syncState_ == HubSyncState::Failed;
+  unlockState();
+  return failed;
 }
 
 bool HubService::update(uint32_t nowMs) {
+  lockState();
   if (syncState_ != HubSyncState::Syncing || !requestResultPending_) {
+    unlockState();
     return false;
   }
   if (!timeReached(nowMs, syncMinUntilMs_)) {
+    unlockState();
     return false;
   }
 
   syncState_ = lastRequestOk_ ? HubSyncState::Idle : HubSyncState::Failed;
   requestResultPending_ = false;
+  unlockState();
   return true;
 }
 
@@ -132,9 +158,11 @@ HubHelloResult HubService::hello(bool networkReady, HubStateChangedCallback onSt
     setDeviceSecret(result.deviceSecret.c_str());
   }
   if (result.ok) {
+    lockState();
     bound_ = result.bound;
     bindCode_ = result.bindCode;
     deviceName_ = result.name;
+    unlockState();
   }
   completeRequest(result, nowMs);
   return result;
@@ -238,15 +266,19 @@ bool HubService::setMessages(const HubMessage* messages, size_t count) {
     return false;
   }
 
+  lockState();
   messageCount_ = count < MaxMessages ? count : MaxMessages;
   for (size_t i = 0; i < messageCount_; ++i) {
     messages_[i] = messages[i];
   }
+  unlockState();
   return true;
 }
 
 bool HubService::deleteMessageLocal(size_t index) {
+  lockState();
   if (index >= messageCount_) {
+    unlockState();
     return false;
   }
   for (size_t i = index + 1; i < messageCount_; ++i) {
@@ -254,14 +286,17 @@ bool HubService::deleteMessageLocal(size_t index) {
   }
   --messageCount_;
   messages_[messageCount_] = {};
+  unlockState();
   return true;
 }
 
 void HubService::clearMessagesLocal() {
+  lockState();
   for (size_t i = 0; i < messageCount_; ++i) {
     messages_[i] = {};
   }
   messageCount_ = 0;
+  unlockState();
 }
 
 const HubWeather& HubService::weather() const {
@@ -269,8 +304,11 @@ const HubWeather& HubService::weather() const {
 }
 
 bool HubService::setWeather(const HubWeather& weather) {
+  lockState();
   weather_ = weather;
-  return weather_.valid;
+  const bool valid = weather_.valid;
+  unlockState();
+  return valid;
 }
 
 size_t HubService::todoCount() const {
@@ -290,12 +328,35 @@ bool HubService::setTodos(const HubTodo* todos, size_t count) {
     return false;
   }
 
+  lockState();
   todoCount_ = count < MaxTodos ? count : MaxTodos;
   for (size_t i = 0; i < todoCount_; ++i) {
     todos_[i] = todos[i];
     todos_[i].dirty = false;
   }
+  unlockState();
   return true;
+}
+
+void HubService::snapshot(HubStateSnapshot& out) const {
+  lockState();
+  out.configured = baseUrl_.length() > 0 && hasUsableCredential(deviceSecret_.c_str());
+  out.bound = bound_;
+  out.syncing = syncState_ == HubSyncState::Syncing;
+  out.failed = syncState_ == HubSyncState::Failed;
+  out.deviceId = deviceId_;
+  out.bindCode = bindCode_;
+  out.deviceName = deviceName_;
+  out.messageCount = messageCount_;
+  for (size_t i = 0; i < messageCount_; ++i) {
+    out.messages[i] = messages_[i];
+  }
+  out.weather = weather_;
+  out.todoCount = todoCount_;
+  for (size_t i = 0; i < todoCount_; ++i) {
+    out.todos[i] = todos_[i];
+  }
+  unlockState();
 }
 
 HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot) {
@@ -435,7 +496,9 @@ HubRequestResult HubService::fetchWeather() {
   HubWeather weather;
   result.ok = parseWeather(jsonDoc_["weather"], weather);
   if (result.ok) {
+    lockState();
     weather_ = weather;
+    unlockState();
   }
   return result;
 }
@@ -537,10 +600,12 @@ HubRequestResult HubService::fetchTodos() {
     }
   }
 
+  lockState();
   for (size_t i = 0; i < nextCount; ++i) {
     todos_[i] = nextTodos[i];
   }
   todoCount_ = nextCount;
+  unlockState();
   return result;
 }
 
@@ -591,7 +656,9 @@ HubRequestResult HubService::ackMessages(const int* ids, size_t count) {
 }
 
 void HubService::storeMessage(const HubMessage& message) {
+  lockState();
   if (hasMessage(message.id)) {
+    unlockState();
     return;
   }
 
@@ -600,6 +667,7 @@ void HubService::storeMessage(const HubMessage& message) {
     messages_[i] = messages_[i - 1];
   }
   messages_[0] = message;
+  unlockState();
 }
 
 bool HubService::hasMessage(int id) const {
@@ -734,10 +802,12 @@ bool HubService::todoPollDue(bool force, uint32_t nowMs) const {
 }
 
 void HubService::beginRequest(uint32_t nowMs, HubStateChangedCallback onStateChanged) {
+  lockState();
   syncState_ = HubSyncState::Syncing;
   syncMinUntilMs_ = nowMs + syncIconMinMs_;
   requestResultPending_ = false;
   lastRequestOk_ = true;
+  unlockState();
 
   if (onStateChanged) {
     onStateChanged();
@@ -746,8 +816,10 @@ void HubService::beginRequest(uint32_t nowMs, HubStateChangedCallback onStateCha
 
 void HubService::completeRequest(const HubRequestResult& result, uint32_t nowMs) {
   (void)nowMs;
+  lockState();
   lastRequestOk_ = result.ok;
   requestResultPending_ = true;
+  unlockState();
 }
 
 bool HubService::urlEncode(const char* value, char* out, size_t outSize) const {
@@ -785,4 +857,16 @@ bool HubService::timeReached(uint32_t nowMs, uint32_t targetMs) const {
 
 bool HubService::hasUsableCredential(const char* value) const {
   return value && value[0] != '\0' && strncmp(value, "YOUR_", 5) != 0;
+}
+
+void HubService::lockState() const {
+  if (stateMutex_) {
+    xSemaphoreTakeRecursive(stateMutex_, portMAX_DELAY);
+  }
+}
+
+void HubService::unlockState() const {
+  if (stateMutex_) {
+    xSemaphoreGiveRecursive(stateMutex_);
+  }
 }

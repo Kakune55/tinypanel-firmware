@@ -10,7 +10,6 @@
 
 namespace {
 
-AppController* activeController = nullptr;
 constexpr uint8_t kSystemMenuStorage = 1;
 constexpr uint8_t kSystemMenuBattery = 2;
 constexpr uint8_t kSystemMenuAction = 3;
@@ -136,9 +135,8 @@ AppController::AppController(const AppControllerConfig& config,
       shtc3_(shtc3),
       timeSync_(timeSync),
       wifi_(wifi),
-      ui_(ui) {
-  activeController = this;
-}
+      ui_(ui),
+      ioWorker_(wifi, timeSync, hub) {}
 
 void AppController::setBootScreenActive(bool active) {
   bootScreenActive_ = active;
@@ -174,6 +172,11 @@ bool AppController::sdMounted() const {
 
 bool AppController::ntpSynced() const {
   return state_.ntpSynced;
+}
+
+bool AppController::beginBackgroundTasks() {
+  refreshHubSnapshot();
+  return ioWorker_.begin();
 }
 
 void AppController::readSensors(bool force) {
@@ -237,25 +240,16 @@ bool AppController::trySyncTime(bool force) {
     return state_.ntpSynced;
   }
 
-  state_.lastNtpAttemptMs = now;
-  if (!timeSync_.begin(config_.timezone)) {
-    state_.ntpSyncFailed = true;
+  AppIoRequest request;
+  request.type = AppIoJobType::NtpSync;
+  request.timeoutMs = 12000;
+  request.timezone = config_.timezone;
+  if (submitIo(request, State::IoOwner::Scheduled)) {
+    state_.lastNtpAttemptMs = now;
+    state_.ntpSyncing = true;
+    state_.ntpSyncFailed = false;
     markUiDirty();
-    return false;
   }
-
-  state_.ntpSyncing = true;
-  state_.ntpSyncFailed = false;
-  markUiDirty();
-  if (display_.isReady() && !bootScreenActive_) {
-    renderUi();
-  }
-
-  state_.ntpSynced = timeSync_.syncToRtc(rtc_, 12000);
-  state_.ntpSyncing = false;
-  state_.ntpSyncFailed = !state_.ntpSynced;
-  rtc_.read(state_.now);
-  markUiDirty();
   return state_.ntpSynced;
 }
 
@@ -271,8 +265,17 @@ bool AppController::runInitialNtpSyncStep() {
     return false;
   }
 
-  state_.initialNtpSyncPending = false;
-  trySyncTime(true);
+  AppIoRequest request;
+  request.type = AppIoJobType::NtpSync;
+  request.timeoutMs = 12000;
+  request.timezone = config_.timezone;
+  if (!submitIo(request, State::IoOwner::InitialNtp)) {
+    return false;
+  }
+  state_.lastNtpAttemptMs = millis();
+  state_.ntpSyncing = true;
+  state_.ntpSyncFailed = false;
+  markUiDirty();
   return true;
 }
 
@@ -291,56 +294,33 @@ void AppController::syncHubTelemetry(bool force) {
     return;
   }
 
-  const HubRequestResult result =
-      hub_.syncTelemetry(buildHubTelemetrySnapshot(), force, wifi_.isConnected(), handleHubStateChanged);
-  if (result.attempted) {
-    markUiDirty();
-  }
+  AppIoRequest request;
+  request.type = AppIoJobType::HubTelemetry;
+  request.force = force;
+  request.telemetry = buildHubTelemetrySnapshot();
+  request.telemetryDeviceId = request.telemetry.deviceId ? request.telemetry.deviceId : "";
+  submitIo(request, State::IoOwner::Scheduled);
 }
 
 void AppController::pollHubMessages(bool force) {
-  const size_t before = hub_.messageCount();
-  const HubRequestResult result = hub_.pollMessages(force, wifi_.isConnected(), handleHubStateChanged);
-  if (!result.attempted) {
-    return;
-  }
-
-  if (hub_.messageCount() != before) {
-    state_.selectedMessage = 0;
-    state_.messageBodyScrollLine = 0;
-    if (verifySdMounted()) {
-      storage_.saveMessages(hub_.messages(), hub_.messageCount());
-    }
-    if (state_.page != DesktopClockPage::Message) {
-      state_.pendingNewMessageAlert = true;
-    }
-  }
-  markUiDirty();
+  AppIoRequest request;
+  request.type = AppIoJobType::HubMessages;
+  request.force = force;
+  submitIo(request, State::IoOwner::Scheduled);
 }
 
 void AppController::pollWeather(bool force) {
-  const HubRequestResult result = hub_.pollWeather(force, wifi_.isConnected(), handleHubStateChanged);
-  if (result.attempted) {
-    if (result.ok) {
-      if (verifySdMounted()) {
-        storage_.saveWeather(hub_.weather());
-      }
-    }
-    markUiDirty();
-  }
+  AppIoRequest request;
+  request.type = AppIoJobType::HubWeather;
+  request.force = force;
+  submitIo(request, State::IoOwner::Scheduled);
 }
 
 void AppController::pollTodos(bool force) {
-  const HubRequestResult result = hub_.pollTodos(force, wifi_.isConnected(), handleHubStateChanged);
-  if (result.attempted) {
-    if (result.ok) {
-      if (verifySdMounted()) {
-        storage_.saveTodos(hub_.todos(), hub_.todoCount());
-      }
-    }
-    updateSelectedTodoAfterChange();
-    markUiDirty();
-  }
+  AppIoRequest request;
+  request.type = AppIoJobType::HubTodos;
+  request.force = force;
+  submitIo(request, State::IoOwner::Scheduled);
 }
 
 void AppController::restoreBatteryHistoryFromStorage() {
@@ -372,16 +352,18 @@ void AppController::loopOnce() {
   handleButtons();
   handleMessageDeleteHold();
   handlePendingKeyClick();
+  handleIoResult();
   handleWifi();
   readRtc(false);
-  const bool didInitialNtpWork = runInitialNtpSyncStep();
+  const bool didInitialNtpWork = !ioWorker_.isBusy() && runInitialNtpSyncStep();
   runScheduledTasks(false);
-  const bool didInitialHubWork = !didInitialNtpWork && runNextInitialHubSyncStep();
-  if (!didInitialNtpWork && !didInitialHubWork) {
+  const bool didInitialHubWork = !ioWorker_.isBusy() && !didInitialNtpWork && runNextInitialHubSyncStep();
+  if (!ioWorker_.isBusy() && !didInitialNtpWork && !didInitialHubWork) {
     runNextScheduledTask();
   }
 
   if (hub_.update()) {
+    refreshHubSnapshot();
     markUiDirty();
   }
 
@@ -404,12 +386,6 @@ void AppController::loopOnce() {
 
   updateCpuFrequency();
   delay(config_.loopDelayMs);
-}
-
-void AppController::handleHubStateChanged() {
-  if (activeController) {
-    activeController->renderHubState();
-  }
 }
 
 String AppController::formatRtcTimestamp(const RtcDateTime& dt) const {
@@ -457,13 +433,15 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.ntpSynced = state_.ntpSynced;
   model.ntpSyncing = state_.ntpSyncing;
   model.ntpSyncFailed = state_.ntpSyncFailed;
-  model.hubSyncing = hub_.isSyncing();
-  model.hubSyncFailed = hub_.hasFailed();
-  model.hubConfigured = hub_.isConfigured();
-  model.hubBound = hub_.isBound();
-  model.hubDeviceId = hub_.deviceId();
-  model.hubBindCode = hub_.bindCode();
-  model.hubDeviceName = hub_.deviceName();
+  model.hubSyncing = hubSnapshot_.syncing ||
+                     (ioWorker_.isBusy() && state_.ioOwner != State::IoOwner::WifiReconnect &&
+                      state_.ioOwner != State::IoOwner::InitialNtp);
+  model.hubSyncFailed = hubSnapshot_.failed;
+  model.hubConfigured = hubSnapshot_.configured;
+  model.hubBound = hubSnapshot_.bound;
+  model.hubDeviceId = hubSnapshot_.deviceId;
+  model.hubBindCode = hubSnapshot_.bindCode;
+  model.hubDeviceName = hubSnapshot_.deviceName;
   model.sdMounted = state_.sdMounted;
   model.sdStatus = sdCard_.lastErrorText();
   model.storageReady = storage_.isReady();
@@ -496,47 +474,33 @@ DesktopClockUiModel AppController::buildUiModel() const {
   model.newMessageAlert = state_.newMessageAlert;
   model.newMessageAlertInvert =
       state_.newMessageAlert && ((millis() / config_.newMessageBlinkMs) % 2 == 1);
-  model.weather = hub_.weather();
-  model.messages = hub_.messages();
-  model.messageCount = hub_.messageCount();
+  model.weather = hubSnapshot_.weather;
+  model.messages = hubSnapshot_.messageCount > 0 ? hubSnapshot_.messages : nullptr;
+  model.messageCount = hubSnapshot_.messageCount;
   model.selectedMessage = state_.selectedMessage;
   model.messageBodyFocused = state_.messageBodyFocused;
   model.messageBodyScrollLine = state_.messageBodyScrollLine;
   model.messageDeleteProgress = state_.messageDeleteProgress;
-  model.todos = hub_.todos();
-  model.todoCount = hub_.todoCount();
+  model.todos = hubSnapshot_.todoCount > 0 ? hubSnapshot_.todos : nullptr;
+  model.todoCount = hubSnapshot_.todoCount;
   model.selectedTodo = state_.selectedTodo;
   return model;
-}
-
-void AppController::renderHubState() {
-  markUiDirty();
-  if (display_.isReady() && !bootScreenActive_) {
-    renderUi();
-  }
 }
 
 void AppController::handleWifi() {
   const uint32_t now = millis();
   if (!config_.wifiConfigured || state_.wifiDisabled || wifi_.isConnected() ||
-      now - state_.lastWifiRetryMs < config_.wifiRetryMs) {
+      ioWorker_.isBusy() || now - state_.lastWifiRetryMs < config_.wifiRetryMs) {
     return;
   }
 
-  if (wifi_.connect(5000)) {
-    state_.wifiFailureCount = 0;
-    state_.wifiAutoDisabled = false;
-  } else if (state_.wifiFailureCount < 255) {
-    ++state_.wifiFailureCount;
-    if (config_.wifiMaxFailures > 0 && state_.wifiFailureCount >= config_.wifiMaxFailures) {
-      state_.wifiDisabled = true;
-      state_.wifiAutoDisabled = true;
-      wifi_.disconnect(true);
-      Serial.println("WiFi: auto disabled after repeated failures");
-    }
+  AppIoRequest request;
+  request.type = AppIoJobType::WifiConnect;
+  request.timeoutMs = 5000;
+  if (submitIo(request, State::IoOwner::WifiReconnect)) {
+    state_.lastWifiRetryMs = now;
+    markUiDirty();
   }
-  state_.lastWifiRetryMs = now;
-  markUiDirty();
 }
 
 void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
@@ -582,28 +546,31 @@ bool AppController::runNextInitialHubSyncStep() {
     return false;
   }
 
+  AppIoRequest request;
+  request.force = true;
   switch (state_.initialHubSyncStep) {
     case State::InitialHubSyncStep::Telemetry:
-      syncHubTelemetry(true);
-      state_.initialHubSyncStep = State::InitialHubSyncStep::Weather;
-      return true;
-    case State::InitialHubSyncStep::Weather:
-      pollWeather(true);
-      state_.initialHubSyncStep = State::InitialHubSyncStep::Messages;
-      return true;
-    case State::InitialHubSyncStep::Messages:
-      pollHubMessages(true);
-      state_.initialHubSyncStep = State::InitialHubSyncStep::Todos;
-      return true;
-    case State::InitialHubSyncStep::Todos:
-      pollTodos(true);
-      state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
-      publishPendingNewMessageAlert();
-      return true;
-    case State::InitialHubSyncStep::Done:
+      if (!state_.now.valid) {
+        advanceInitialHubStep();
+        return true;
+      }
+      request.type = AppIoJobType::HubTelemetry;
+      request.telemetry = buildHubTelemetrySnapshot();
+      request.telemetryDeviceId = request.telemetry.deviceId ? request.telemetry.deviceId : "";
       break;
+    case State::InitialHubSyncStep::Weather:
+      request.type = AppIoJobType::HubWeather;
+      break;
+    case State::InitialHubSyncStep::Messages:
+      request.type = AppIoJobType::HubMessages;
+      break;
+    case State::InitialHubSyncStep::Todos:
+      request.type = AppIoJobType::HubTodos;
+      break;
+    case State::InitialHubSyncStep::Done:
+      return false;
   }
-  return false;
+  return submitIo(request, State::IoOwner::InitialHub);
 }
 
 bool AppController::runNextScheduledTask() {
@@ -616,7 +583,9 @@ bool AppController::runNextScheduledTask() {
       return true;
     case State::ScheduledTaskStep::Ntp:
       trySyncTime(state_.scheduledTaskForce);
-      state_.scheduledTaskStep = State::ScheduledTaskStep::Sensors;
+      if (!ioWorker_.isBusy()) {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::Sensors;
+      }
       return true;
     case State::ScheduledTaskStep::Sensors:
       readSensors(true);
@@ -625,51 +594,40 @@ bool AppController::runNextScheduledTask() {
     case State::ScheduledTaskStep::Messages:
       if (hubRequestsReady()) {
         pollHubMessages(state_.scheduledTaskForce);
+      } else {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
       }
-      state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
       return true;
     case State::ScheduledTaskStep::TodoSync: {
-      HubRequestResult todoSync = hubRequestsReady()
-                                      ? hub_.syncTodoChanges(true, handleHubStateChanged)
-                                      : HubRequestResult{};
-      state_.scheduledTaskTodoSyncOk = !todoSync.attempted || todoSync.ok;
-      if (todoSync.attempted) {
-        updateSelectedTodoAfterChange();
-        markUiDirty();
+      if (hubRequestsReady()) {
+        AppIoRequest request;
+        request.type = AppIoJobType::HubTodoChanges;
+        submitIo(request, State::IoOwner::Scheduled);
+      } else {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::Todos;
       }
-      state_.scheduledTaskStep =
-          state_.scheduledTaskTodoSyncOk ? State::ScheduledTaskStep::Todos : State::ScheduledTaskStep::Weather;
       return true;
     }
     case State::ScheduledTaskStep::Todos:
       if (hubRequestsReady()) {
         pollTodos(state_.scheduledTaskForce);
+      } else {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::Weather;
       }
-      state_.scheduledTaskStep = State::ScheduledTaskStep::Weather;
       return true;
     case State::ScheduledTaskStep::Weather:
       if (hubRequestsReady()) {
         pollWeather(state_.scheduledTaskForce);
-      }
-      if (state_.scheduledTaskIncludeTelemetry) {
-        state_.scheduledTaskStep = State::ScheduledTaskStep::Telemetry;
       } else {
-        state_.scheduledTaskStep = State::ScheduledTaskStep::Idle;
-        state_.scheduledTaskForce = false;
-        state_.scheduledTaskIncludeTelemetry = false;
-        state_.scheduledTaskTodoSyncOk = true;
-        publishPendingNewMessageAlert();
+        advanceScheduledStep();
       }
       return true;
     case State::ScheduledTaskStep::Telemetry:
       if (hubRequestsReady()) {
         syncHubTelemetry(true);
+      } else {
+        advanceScheduledStep();
       }
-      state_.scheduledTaskStep = State::ScheduledTaskStep::Idle;
-      state_.scheduledTaskForce = false;
-      state_.scheduledTaskIncludeTelemetry = false;
-      state_.scheduledTaskTodoSyncOk = true;
-      publishPendingNewMessageAlert();
       return true;
   }
   return false;
@@ -686,6 +644,192 @@ void AppController::queueScheduledTasks(bool force, bool includeTelemetry) {
 
 bool AppController::hubRequestsReady() const {
   return hub_.isConfigured() && wifi_.isConnected();
+}
+
+bool AppController::submitIo(const AppIoRequest& request, State::IoOwner owner) {
+  if (!ioWorker_.submit(request)) {
+    return false;
+  }
+  state_.ioOwner = owner;
+  noteActivity();
+  markUiDirty();
+  return true;
+}
+
+void AppController::handleIoResult() {
+  AppIoResult result;
+  if (!ioWorker_.takeResult(result)) {
+    return;
+  }
+
+  const State::IoOwner owner = state_.ioOwner;
+  state_.ioOwner = State::IoOwner::None;
+  switch (result.type) {
+    case AppIoJobType::WifiConnect:
+      handleWifiResult(result);
+      break;
+    case AppIoJobType::NtpSync:
+      handleNtpResult(result);
+      break;
+    case AppIoJobType::HubHello:
+    case AppIoJobType::HubTelemetry:
+    case AppIoJobType::HubMessages:
+    case AppIoJobType::HubWeather:
+    case AppIoJobType::HubTodos:
+    case AppIoJobType::HubTodoChanges:
+      handleHubResult(result);
+      break;
+    case AppIoJobType::None:
+      break;
+  }
+
+  if (owner == State::IoOwner::InitialNtp) {
+    state_.initialNtpSyncPending = false;
+  } else if (owner == State::IoOwner::InitialHub) {
+    advanceInitialHubStep();
+  } else if (owner == State::IoOwner::Scheduled) {
+    const bool todoSyncOk = result.type != AppIoJobType::HubTodoChanges || result.operationOk;
+    advanceScheduledStep(todoSyncOk);
+  }
+  markUiDirty();
+}
+
+void AppController::handleWifiResult(const AppIoResult& result) {
+  if (result.operationOk) {
+    state_.wifiFailureCount = 0;
+    state_.wifiAutoDisabled = false;
+    wifi_.updateSignal();
+  } else if (state_.wifiFailureCount < 255) {
+    ++state_.wifiFailureCount;
+    if (config_.wifiMaxFailures > 0 && state_.wifiFailureCount >= config_.wifiMaxFailures) {
+      state_.wifiDisabled = true;
+      state_.wifiAutoDisabled = true;
+      wifi_.disconnect(true);
+      Serial.println("WiFi: auto disabled after repeated failures");
+    }
+  }
+}
+
+void AppController::handleNtpResult(const AppIoResult& result) {
+  bool synced = result.operationOk && result.networkTime.valid;
+  if (synced) {
+    synced = rtc_.write(result.networkTime);
+    if (synced) {
+      state_.now = result.networkTime;
+      Serial.printf("NTP: RTC updated %04u-%02u-%02u %02u:%02u:%02u\n",
+                    state_.now.year,
+                    state_.now.month,
+                    state_.now.day,
+                    state_.now.hour,
+                    state_.now.minute,
+                    state_.now.second);
+    } else {
+      Serial.println("NTP: RTC write failed");
+    }
+  }
+  state_.ntpSynced = synced;
+  state_.ntpSyncing = false;
+  state_.ntpSyncFailed = !synced;
+}
+
+void AppController::handleHubResult(const AppIoResult& result) {
+  const HubStateSnapshot previous = hubSnapshot_;
+  refreshHubSnapshot();
+
+  if (result.type == AppIoJobType::HubHello && result.hello.ok) {
+    StoredHubCredentials updated;
+    updated.bound = result.hello.bound;
+    snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", result.hello.deviceSecret.c_str());
+    snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", result.hello.bindCode.c_str());
+    snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", result.hello.name.c_str());
+    if (storage_.isReady()) {
+      storage_.saveHubCredentials(updated);
+    }
+  } else if (result.type == AppIoJobType::HubMessages && result.request.attempted) {
+    bool changed = previous.messageCount != hubSnapshot_.messageCount;
+    for (size_t i = 0; !changed && i < hubSnapshot_.messageCount; ++i) {
+      changed = previous.messages[i].id != hubSnapshot_.messages[i].id;
+    }
+    if (changed) {
+      state_.selectedMessage = 0;
+      state_.messageBodyScrollLine = 0;
+      if (verifySdMounted()) {
+        storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount);
+      }
+      if (state_.page != DesktopClockPage::Message) {
+        state_.pendingNewMessageAlert = true;
+      }
+    }
+  } else if (result.type == AppIoJobType::HubWeather && result.request.ok) {
+    if (verifySdMounted()) {
+      storage_.saveWeather(hubSnapshot_.weather);
+    }
+  } else if ((result.type == AppIoJobType::HubTodos || result.type == AppIoJobType::HubTodoChanges) &&
+             result.request.ok) {
+    if (verifySdMounted()) {
+      storage_.saveTodos(hubSnapshot_.todos, hubSnapshot_.todoCount);
+    }
+    updateSelectedTodoAfterChange();
+  }
+}
+
+void AppController::refreshHubSnapshot() {
+  hub_.snapshot(hubSnapshot_);
+}
+
+void AppController::advanceInitialHubStep() {
+  switch (state_.initialHubSyncStep) {
+    case State::InitialHubSyncStep::Telemetry:
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Weather;
+      break;
+    case State::InitialHubSyncStep::Weather:
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Messages;
+      break;
+    case State::InitialHubSyncStep::Messages:
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Todos;
+      break;
+    case State::InitialHubSyncStep::Todos:
+      state_.initialHubSyncStep = State::InitialHubSyncStep::Done;
+      publishPendingNewMessageAlert();
+      break;
+    case State::InitialHubSyncStep::Done:
+      break;
+  }
+}
+
+void AppController::advanceScheduledStep(bool todoSyncOk) {
+  switch (state_.scheduledTaskStep) {
+    case State::ScheduledTaskStep::Ntp:
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Sensors;
+      break;
+    case State::ScheduledTaskStep::Messages:
+      state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
+      break;
+    case State::ScheduledTaskStep::TodoSync:
+      state_.scheduledTaskTodoSyncOk = todoSyncOk;
+      state_.scheduledTaskStep = todoSyncOk ? State::ScheduledTaskStep::Todos : State::ScheduledTaskStep::Weather;
+      break;
+    case State::ScheduledTaskStep::Todos:
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Weather;
+      break;
+    case State::ScheduledTaskStep::Weather:
+      if (state_.scheduledTaskIncludeTelemetry) {
+        state_.scheduledTaskStep = State::ScheduledTaskStep::Telemetry;
+        break;
+      }
+      [[fallthrough]];
+    case State::ScheduledTaskStep::Telemetry:
+      state_.scheduledTaskStep = State::ScheduledTaskStep::Idle;
+      state_.scheduledTaskForce = false;
+      state_.scheduledTaskIncludeTelemetry = false;
+      state_.scheduledTaskTodoSyncOk = true;
+      publishPendingNewMessageAlert();
+      break;
+    case State::ScheduledTaskStep::Idle:
+    case State::ScheduledTaskStep::WifiSignal:
+    case State::ScheduledTaskStep::Sensors:
+      break;
+  }
 }
 
 void AppController::publishPendingNewMessageAlert() {
@@ -751,24 +895,16 @@ void AppController::handleForcedRefresh() {
   }
   refreshSdStats(true);
   if (!wifi_.isConnected() && config_.wifiConfigured && !state_.wifiDisabled) {
-    if (wifi_.connect(8000)) {
-      state_.wifiFailureCount = 0;
-      state_.wifiAutoDisabled = false;
-    } else if (state_.wifiFailureCount < 255) {
-      ++state_.wifiFailureCount;
-      if (config_.wifiMaxFailures > 0 && state_.wifiFailureCount >= config_.wifiMaxFailures) {
-        state_.wifiDisabled = true;
-        state_.wifiAutoDisabled = true;
-        wifi_.disconnect(true);
-        Serial.println("WiFi: auto disabled after repeated failures");
-      }
-    }
+    AppIoRequest request;
+    request.type = AppIoJobType::WifiConnect;
+    request.timeoutMs = 8000;
+    submitIo(request, State::IoOwner::WifiReconnect);
   }
   queueScheduledTasks(true, true);
 }
 
 void AppController::updateSelectedTodoAfterChange() {
-  const size_t count = hub_.todoCount();
+  const size_t count = hubSnapshot_.todoCount;
   if (count == 0) {
     state_.selectedTodo = 0;
   } else if (state_.selectedTodo >= count) {
@@ -832,7 +968,7 @@ uint16_t AppController::messageBodyLineCount(const String& text) const {
 }
 
 void AppController::handleMessageKeyClick() {
-  const size_t count = hub_.messageCount();
+  const size_t count = hubSnapshot_.messageCount;
   if (count == 0) {
     return;
   }
@@ -844,7 +980,7 @@ void AppController::handleMessageKeyClick() {
     return;
   }
 
-  const HubMessage* message = hub_.messageAt(state_.selectedMessage);
+  const HubMessage* message = state_.selectedMessage < count ? &hubSnapshot_.messages[state_.selectedMessage] : nullptr;
   const uint16_t lineCount = message ? messageBodyLineCount(message->body) : 1;
   constexpr uint16_t kPageLines = 11;
   if (lineCount <= kPageLines || state_.messageBodyScrollLine + kPageLines >= lineCount) {
@@ -856,7 +992,7 @@ void AppController::handleMessageKeyClick() {
 }
 
 void AppController::handleMessageDelete() {
-  const size_t count = hub_.messageCount();
+  const size_t count = hubSnapshot_.messageCount;
   if (count == 0 || state_.messageBodyFocused) {
     return;
   }
@@ -866,10 +1002,11 @@ void AppController::handleMessageDelete() {
     return;
   }
 
+  refreshHubSnapshot();
   if (verifySdMounted()) {
-    storage_.saveMessages(hub_.messages(), hub_.messageCount());
+    storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount);
   }
-  const size_t nextCount = hub_.messageCount();
+  const size_t nextCount = hubSnapshot_.messageCount;
   if (nextCount == 0) {
     state_.selectedMessage = 0;
     state_.messageBodyScrollLine = 0;
@@ -882,7 +1019,7 @@ void AppController::handleMessageDelete() {
 }
 
 void AppController::handleMessageDeleteHold() {
-  if (state_.page != DesktopClockPage::Message || state_.messageBodyFocused || hub_.messageCount() == 0 ||
+  if (state_.page != DesktopClockPage::Message || state_.messageBodyFocused || hubSnapshot_.messageCount == 0 ||
       !keyButton_.isPressed() || state_.messageDeleteTriggered) {
     if (state_.messageDeleteProgress != 0) {
       state_.messageDeleteProgress = 0;
@@ -905,7 +1042,7 @@ void AppController::handleMessageDeleteHold() {
 }
 
 void AppController::handleTodoKeyClick() {
-  const size_t count = hub_.todoCount();
+  const size_t count = hubSnapshot_.todoCount;
   if (count == 0) {
     return;
   }
@@ -915,25 +1052,27 @@ void AppController::handleTodoKeyClick() {
 }
 
 void AppController::handleTodoStatusToggle() {
-  const HubTodo* todo = hub_.todoAt(state_.selectedTodo);
+  const HubTodo* todo = state_.selectedTodo < hubSnapshot_.todoCount ? &hubSnapshot_.todos[state_.selectedTodo] : nullptr;
   if (!todo) {
     return;
   }
 
   const int nextStatus = (todo->status + 1) % 3;
   if (hub_.setTodoStatusLocal(state_.selectedTodo, nextStatus)) {
+    refreshHubSnapshot();
     markUiDirty();
   }
 }
 
 void AppController::handleTodoDelete() {
-  const HubTodo* todo = hub_.todoAt(state_.selectedTodo);
+  const HubTodo* todo = state_.selectedTodo < hubSnapshot_.todoCount ? &hubSnapshot_.todos[state_.selectedTodo] : nullptr;
   if (!todo) {
     return;
   }
 
   if (hub_.deleteTodoLocal(state_.selectedTodo)) {
-    const size_t count = hub_.todoCount();
+    refreshHubSnapshot();
+    const size_t count = hubSnapshot_.todoCount;
     if (count == 0) {
       state_.selectedTodo = 0;
     } else if (state_.selectedTodo >= count) {
@@ -979,14 +1118,15 @@ void AppController::handleSystemAction() {
 }
 
 void AppController::handleSystemClearMessages() {
-  if (hub_.messageCount() == 0) {
+  if (hubSnapshot_.messageCount == 0) {
     Serial.println("KEY: system action ignored");
     return;
   }
 
   hub_.clearMessagesLocal();
+  refreshHubSnapshot();
   if (verifySdMounted()) {
-    storage_.saveMessages(hub_.messages(), hub_.messageCount());
+    storage_.saveMessages(hubSnapshot_.messages, hubSnapshot_.messageCount);
   }
   state_.selectedMessage = 0;
   state_.messageBodyScrollLine = 0;
@@ -1015,11 +1155,13 @@ void AppController::handleSystemWifiToggle() {
   state_.wifiAutoDisabled = false;
   state_.wifiFailureCount = 0;
   state_.lastWifiRetryMs = 0;
-  if (wifi_.connect(8000)) {
-    Serial.println("KEY: wifi on");
+  AppIoRequest request;
+  request.type = AppIoJobType::WifiConnect;
+  request.timeoutMs = 8000;
+  if (submitIo(request, State::IoOwner::WifiReconnect)) {
+    Serial.println("KEY: wifi on queued");
   } else {
-    state_.wifiFailureCount = 1;
-    Serial.println("KEY: wifi on failed");
+    Serial.println("KEY: wifi on pending");
   }
   markUiDirty();
 }
@@ -1044,18 +1186,9 @@ void AppController::handleSystemRePair() {
     return;
   }
 
-  HubHelloResult hello = hub_.hello(true, handleHubStateChanged);
-  if (hello.attempted && hello.ok) {
-    StoredHubCredentials updated;
-    updated.bound = hello.bound;
-    snprintf(updated.deviceSecret, sizeof(updated.deviceSecret), "%s", hello.deviceSecret.c_str());
-    snprintf(updated.bindCode, sizeof(updated.bindCode), "%s", hello.bindCode.c_str());
-    snprintf(updated.deviceName, sizeof(updated.deviceName), "%s", hello.name.c_str());
-    if (storage_.isReady()) {
-      storage_.saveHubCredentials(updated);
-    }
-  }
-
+  AppIoRequest request;
+  request.type = AppIoJobType::HubHello;
+  submitIo(request, State::IoOwner::RePair);
   markUiDirty();
 }
 
@@ -1470,7 +1603,7 @@ void AppController::handleButtons() {
       state_.newMessageAlert = false;
     }
     if (state_.page == DesktopClockPage::Todo) {
-      const size_t count = hub_.todoCount();
+      const size_t count = hubSnapshot_.todoCount;
       if (count == 0) {
         state_.selectedTodo = 0;
       } else if (state_.selectedTodo >= count) {
@@ -1516,7 +1649,7 @@ bool AppController::shouldUseActiveCpu() const {
   if (state_.lastActivityMs == 0 || now - state_.lastActivityMs < config_.cpuIdleAfterMs) {
     return true;
   }
-  if (bootScreenActive_ || state_.uiDirty || hub_.isSyncing()) {
+  if (bootScreenActive_ || state_.uiDirty || hubSnapshot_.syncing || ioWorker_.isBusy()) {
     return true;
   }
   if (state_.pendingKeyClick || keyButton_.isPressed() || bootButton_.isPressed()) {
