@@ -93,6 +93,7 @@ public:
                                    uint32_t nowMs = millis());
   bool setTodoStatusLocal(size_t index, int status);
   bool deleteTodoLocal(size_t index);
+  bool hasPendingTodoChanges() const;
   size_t messageCount() const;
   const HubMessage* messages() const;
   const HubMessage* messageAt(size_t index) const;
@@ -114,6 +115,8 @@ private:
   HubRequestResult syncSubscription(HubMessagesPersistCallback persist, void* persistContext);
   HubRequestResult fetchWeather();
   HubRequestResult fetchTodos();
+  HubRequestResult patchTodoStatus(int id, int status, int version, HubTodo& updated);
+  HubRequestResult deleteTodoByVersion(int id, int version);
   bool parseWeather(JsonVariantConst source, HubWeather& weather) const;
   bool parseMessage(JsonObjectConst item, HubMessage& out) const;
   HubRequestResult ackMessages(const int* ids, size_t count);
@@ -134,6 +137,17 @@ private:
                                    JsonDocument& doc,
                                    const char* label,
                                    JsonDocument& filter);
+  HubRequestResult patchJson(AuthMode auth,
+                             const char* path,
+                             const char* body,
+                             size_t bodyLen,
+                             JsonDocument* response,
+                             const char* label);
+  HubRequestResult deleteJson(AuthMode auth,
+                              const char* path,
+                              const char* body,
+                              size_t bodyLen,
+                              const char* label);
   HubRequestResult requestJson(const char* method,
                                AuthMode auth,
                                const char* path,
@@ -154,6 +168,11 @@ private:
   void lockState() const;
   void unlockState() const;
 
+  struct PendingTodoDelete {
+    int id = 0;
+    int version = 0;
+  };
+
   String baseUrl_;
   String deviceSecret_;
   String deviceId_;
@@ -161,6 +180,7 @@ private:
   String deviceName_;
   bool bound_ = false;
   uint32_t sequence_ = 0;
+  String pendingTelemetryBody_;
   uint32_t telemetryIntervalMs_ = 5UL * 60UL * 1000UL;
   uint32_t messagePollIntervalMs_ = 60UL * 1000UL;
   uint32_t weatherPollIntervalMs_ = 10UL * 60UL * 1000UL;
@@ -184,6 +204,8 @@ private:
   uint8_t todoLimit_ = MaxTodos;
   HubTodo todos_[MaxTodos];
   size_t todoCount_ = 0;
+  PendingTodoDelete pendingTodoDeletes_[MaxTodos];
+  size_t pendingTodoDeleteCount_ = 0;
   WiFiClient client_;
   WiFiClientSecure secureClient_;
   JsonDocument jsonDoc_;

@@ -22,7 +22,7 @@ struct AppControllerConfig {
   bool wifiConfigured = false;
   uint32_t rtcPollMs = 1000;
   uint32_t hubSyncWindowMs = 60000;
-  uint8_t telemetryEveryHubSyncWindows = 5;
+  uint32_t hubFailureRetryMs = 15000;
   uint32_t wifiRetryMs = 30000;
   uint32_t wifiRetryMaxMs = 10UL * 60UL * 1000UL;
   uint32_t hubHelloRetryMs = 15000;
@@ -151,12 +151,13 @@ class AppController {
     uint8_t messageDeleteProgress = 0;
     String bootId;
     size_t selectedTodo = 0;
-    uint8_t hubSyncWindowCount = 0;
+    uint32_t nextHubRetryMs = 0;
     InitialHubSyncStep initialHubSyncStep = InitialHubSyncStep::Telemetry;
     ScheduledTaskStep scheduledTaskStep = ScheduledTaskStep::Idle;
     bool scheduledTaskForce = false;
     bool scheduledTaskIncludeTelemetry = false;
     bool scheduledTaskTodoSyncOk = true;
+    bool todoSyncRequested = false;
     uint32_t lastActivityMs = 0;
     uint8_t currentCpuMhz = 0;
     bool serialCanvasMode = false;

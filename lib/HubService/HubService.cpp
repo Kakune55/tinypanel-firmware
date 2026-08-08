@@ -186,7 +186,9 @@ HubRequestResult HubService::syncTelemetry(const HubTelemetrySnapshot& snapshot,
 
   beginRequest(nowMs, onStateChanged);
   HubRequestResult result = sendTelemetry(snapshot);
-  lastTelemetryMs_ = nowMs;
+  if (result.ok) {
+    lastTelemetryMs_ = nowMs;
+  }
   completeRequest(result, nowMs);
   return result;
 }
@@ -203,7 +205,9 @@ HubRequestResult HubService::pollMessages(bool force,
 
   beginRequest(nowMs, onStateChanged);
   HubRequestResult result = syncSubscription(persist, persistContext);
-  lastMessagePollMs_ = nowMs;
+  if (result.ok) {
+    lastMessagePollMs_ = nowMs;
+  }
   completeRequest(result, nowMs);
   return result;
 }
@@ -218,7 +222,9 @@ HubRequestResult HubService::pollWeather(bool force,
 
   beginRequest(nowMs, onStateChanged);
   HubRequestResult result = fetchWeather();
-  lastWeatherPollMs_ = nowMs;
+  if (result.ok) {
+    lastWeatherPollMs_ = nowMs;
+  }
   completeRequest(result, nowMs);
   return result;
 }
@@ -233,7 +239,9 @@ HubRequestResult HubService::pollTodos(bool force,
 
   beginRequest(nowMs, onStateChanged);
   HubRequestResult result = fetchTodos();
-  lastTodoPollMs_ = nowMs;
+  if (result.ok) {
+    lastTodoPollMs_ = nowMs;
+  }
   completeRequest(result, nowMs);
   return result;
 }
@@ -241,21 +249,157 @@ HubRequestResult HubService::pollTodos(bool force,
 HubRequestResult HubService::syncTodoChanges(bool networkReady,
                                              HubStateChangedCallback onStateChanged,
                                              uint32_t nowMs) {
-  (void)networkReady;
-  (void)onStateChanged;
-  (void)nowMs;
-  return {};
+  if (!isConfigured() || !networkReady) {
+    return {};
+  }
+
+  HubTodo patches[MaxTodos];
+  size_t patchCount = 0;
+  PendingTodoDelete deletes[MaxTodos];
+  size_t deleteCount = 0;
+  lockState();
+  for (size_t i = 0; i < todoCount_; ++i) {
+    if (todos_[i].dirty) {
+      patches[patchCount++] = todos_[i];
+    }
+  }
+  deleteCount = pendingTodoDeleteCount_;
+  for (size_t i = 0; i < deleteCount; ++i) {
+    deletes[i] = pendingTodoDeletes_[i];
+  }
+  unlockState();
+  if (patchCount == 0 && deleteCount == 0) {
+    return {};
+  }
+
+  beginRequest(nowMs, onStateChanged);
+  HubRequestResult result;
+  result.attempted = true;
+  result.ok = true;
+  result.changed = true;
+
+  for (size_t i = 0; i < patchCount; ++i) {
+    HubTodo updated;
+    HubRequestResult patchResult =
+        patchTodoStatus(patches[i].id, patches[i].status, patches[i].version, updated);
+    result.statusCode = patchResult.statusCode;
+    if (!patchResult.ok) {
+      result.ok = false;
+      result.retryable = patchResult.retryable || patchResult.statusCode == 409;
+      break;
+    }
+
+    lockState();
+    for (size_t todoIndex = 0; todoIndex < todoCount_; ++todoIndex) {
+      HubTodo& current = todos_[todoIndex];
+      if (current.id != patches[i].id) {
+        continue;
+      }
+      const bool unchangedLocally = current.status == patches[i].status &&
+                                    current.version == patches[i].version;
+      current.version = updated.version;
+      current.updatedAt = updated.updatedAt;
+      current.dirty = !unchangedLocally;
+      break;
+    }
+    for (size_t deleteIndex = 0; deleteIndex < pendingTodoDeleteCount_; ++deleteIndex) {
+      if (pendingTodoDeletes_[deleteIndex].id == patches[i].id &&
+          pendingTodoDeletes_[deleteIndex].version == patches[i].version) {
+        pendingTodoDeletes_[deleteIndex].version = updated.version;
+      }
+    }
+    unlockState();
+  }
+
+  if (result.ok) {
+    for (size_t i = 0; i < deleteCount; ++i) {
+      lockState();
+      int currentVersion = deletes[i].version;
+      for (size_t pendingIndex = 0; pendingIndex < pendingTodoDeleteCount_; ++pendingIndex) {
+        if (pendingTodoDeletes_[pendingIndex].id == deletes[i].id) {
+          currentVersion = pendingTodoDeletes_[pendingIndex].version;
+          break;
+        }
+      }
+      unlockState();
+
+      HubRequestResult deleteResult = deleteTodoByVersion(deletes[i].id, currentVersion);
+      result.statusCode = deleteResult.statusCode;
+      if (!deleteResult.ok) {
+        result.ok = false;
+        result.retryable = deleteResult.retryable || deleteResult.statusCode == 409;
+        break;
+      }
+
+      lockState();
+      for (size_t pendingIndex = 0; pendingIndex < pendingTodoDeleteCount_; ++pendingIndex) {
+        if (pendingTodoDeletes_[pendingIndex].id != deletes[i].id) {
+          continue;
+        }
+        for (size_t move = pendingIndex + 1; move < pendingTodoDeleteCount_; ++move) {
+          pendingTodoDeletes_[move - 1] = pendingTodoDeletes_[move];
+        }
+        --pendingTodoDeleteCount_;
+        break;
+      }
+      unlockState();
+    }
+  }
+
+  if (result.ok || result.statusCode == 409) {
+    HubRequestResult refresh = fetchTodos();
+    result.ok = result.ok && refresh.ok;
+    if (!refresh.ok) {
+      result.statusCode = refresh.statusCode;
+      result.retryable = result.retryable || refresh.retryable;
+    }
+  }
+
+  completeRequest(result, nowMs);
+  return result;
 }
 
 bool HubService::setTodoStatusLocal(size_t index, int status) {
-  (void)index;
-  (void)status;
-  return false;
+  lockState();
+  if (index >= todoCount_ || status < 0 || status > 2) {
+    unlockState();
+    return false;
+  }
+  if (todos_[index].status != status) {
+    todos_[index].status = status;
+    todos_[index].dirty = true;
+  }
+  unlockState();
+  return true;
 }
 
 bool HubService::deleteTodoLocal(size_t index) {
-  (void)index;
-  return false;
+  lockState();
+  if (index >= todoCount_ || pendingTodoDeleteCount_ >= MaxTodos) {
+    unlockState();
+    return false;
+  }
+  if (todos_[index].id > 0 && todos_[index].version > 0) {
+    pendingTodoDeletes_[pendingTodoDeleteCount_].id = todos_[index].id;
+    pendingTodoDeletes_[pendingTodoDeleteCount_].version = todos_[index].version;
+    ++pendingTodoDeleteCount_;
+  }
+  for (size_t i = index + 1; i < todoCount_; ++i) {
+    todos_[i - 1] = todos_[i];
+  }
+  --todoCount_;
+  unlockState();
+  return true;
+}
+
+bool HubService::hasPendingTodoChanges() const {
+  lockState();
+  bool pending = pendingTodoDeleteCount_ > 0;
+  for (size_t i = 0; i < todoCount_ && !pending; ++i) {
+    pending = todos_[i].dirty;
+  }
+  unlockState();
+  return pending;
 }
 
 size_t HubService::messageCount() const {
@@ -352,6 +496,7 @@ bool HubService::setTodos(const HubTodo* todos, size_t count) {
     todos_[i] = todos[i];
     todos_[i].dirty = false;
   }
+  pendingTodoDeleteCount_ = 0;
   unlockState();
   return true;
 }
@@ -382,53 +527,62 @@ HubRequestResult HubService::sendTelemetry(const HubTelemetrySnapshot& snapshot)
     return {};
   }
 
-  jsonDoc_.clear();
-  JsonDocument& doc = jsonDoc_;
-  doc["schema_version"] = kSchemaVersion;
-  doc["device_id"] = snapshot.deviceId && snapshot.deviceId[0] ? snapshot.deviceId : deviceId_.c_str();
-  doc["boot_id"] = snapshot.bootId;
-  doc["sequence"] = ++sequence_;
-  doc["report_timestamp"] = snapshot.reportTimestamp;
-  doc["uptime_s"] = snapshot.uptimeS;
+  if (pendingTelemetryBody_.length() == 0) {
+    jsonDoc_.clear();
+    JsonDocument& doc = jsonDoc_;
+    doc["schema_version"] = kSchemaVersion;
+    doc["device_id"] = snapshot.deviceId && snapshot.deviceId[0] ? snapshot.deviceId : deviceId_.c_str();
+    doc["boot_id"] = snapshot.bootId;
+    doc["sequence"] = ++sequence_;
+    doc["report_timestamp"] = snapshot.reportTimestamp;
+    doc["uptime_s"] = snapshot.uptimeS;
 
-  JsonObject power = doc["power"].to<JsonObject>();
-  JsonObject battery = power["battery"].to<JsonObject>();
-  battery["raw_adc"] = snapshot.battery.rawAdc;
-  battery["raw_voltage_mv"] = snapshot.battery.rawVoltageMv;
-  battery["voltage_mv"] = toMillivolts(snapshot.battery.voltage);
-  battery["percentage"] = snapshot.battery.percentFloat;
-  battery["status"] = batteryStatusText(snapshot.battery, snapshot.usbConnected);
-  power["usb_connected"] = snapshot.usbConnected;
+    JsonObject power = doc["power"].to<JsonObject>();
+    JsonObject battery = power["battery"].to<JsonObject>();
+    battery["raw_adc"] = snapshot.battery.rawAdc;
+    battery["raw_voltage_mv"] = snapshot.battery.rawVoltageMv;
+    battery["voltage_mv"] = toMillivolts(snapshot.battery.voltage);
+    battery["percentage"] = snapshot.battery.percentFloat;
+    battery["status"] = batteryStatusText(snapshot.battery, snapshot.usbConnected);
+    power["usb_connected"] = snapshot.usbConnected;
 
-  JsonObject environment = doc["environment"].to<JsonObject>();
-  JsonObject shtc3 = environment["shtc3"].to<JsonObject>();
-  shtc3["temperature_c"] = snapshot.environment.temperatureC;
-  shtc3["humidity_rh"] = snapshot.environment.humidityRh;
-  shtc3["sensor_ok"] = snapshot.environment.valid;
+    JsonObject environment = doc["environment"].to<JsonObject>();
+    JsonObject shtc3 = environment["shtc3"].to<JsonObject>();
+    shtc3["temperature_c"] = snapshot.environment.temperatureC;
+    shtc3["humidity_rh"] = snapshot.environment.humidityRh;
+    shtc3["sensor_ok"] = snapshot.environment.valid;
 
-  JsonObject network = doc["network"].to<JsonObject>();
-  network["wifi_connected"] = snapshot.wifiConnected;
-  network["ssid"] = snapshot.wifiSsid;
-  network["rssi_dbm"] = snapshot.wifiRssiDbm;
-  network["ip"] = snapshot.wifiIp;
+    JsonObject network = doc["network"].to<JsonObject>();
+    network["wifi_connected"] = snapshot.wifiConnected;
+    network["ssid"] = snapshot.wifiSsid;
+    network["rssi_dbm"] = snapshot.wifiRssiDbm;
+    network["ip"] = snapshot.wifiIp;
 
-  JsonObject system = doc["system"].to<JsonObject>();
-  system["free_heap_bytes"] = snapshot.freeHeapBytes;
-  system["free_psram_bytes"] = snapshot.freePsramBytes;
-  system["ntp_sync"] = snapshot.ntpSync;
+    JsonObject system = doc["system"].to<JsonObject>();
+    system["free_heap_bytes"] = snapshot.freeHeapBytes;
+    system["free_psram_bytes"] = snapshot.freePsramBytes;
+    system["ntp_sync"] = snapshot.ntpSync;
 
-  JsonObject storage = doc["storage"].to<JsonObject>();
-  storage["sd_card_present"] = snapshot.sdCardPresent;
-  storage["sd_card_total_mb"] = snapshot.sdCardTotalMb;
-  storage["sd_card_used_mb"] = snapshot.sdCardUsedMb;
+    JsonObject storage = doc["storage"].to<JsonObject>();
+    storage["sd_card_present"] = snapshot.sdCardPresent;
+    storage["sd_card_total_mb"] = snapshot.sdCardTotalMb;
+    storage["sd_card_used_mb"] = snapshot.sdCardUsedMb;
+    doc["app"].to<JsonObject>();
 
-  doc["app"].to<JsonObject>();
+    pendingTelemetryBody_.reserve(measureJson(doc) + 1);
+    serializeJson(doc, pendingTelemetryBody_);
+  }
 
-  String body;
-  body.reserve(measureJson(doc) + 1);
-  serializeJson(doc, body);
-
-  return postJson(AuthMode::Device, "/device/telemetry", body.c_str(), body.length(), nullptr, "telemetry");
+  HubRequestResult result = postJson(AuthMode::Device,
+                                     "/device/telemetry",
+                                     pendingTelemetryBody_.c_str(),
+                                     pendingTelemetryBody_.length(),
+                                     nullptr,
+                                     "telemetry");
+  if (result.ok || !result.retryable) {
+    pendingTelemetryBody_ = "";
+  }
+  return result;
 }
 
 HubHelloResult HubService::sendHello() {
@@ -440,6 +594,7 @@ HubHelloResult HubService::sendHello() {
   result.attempted = request.attempted;
   result.ok = request.ok;
   result.statusCode = request.statusCode;
+  result.retryable = request.retryable;
   if (!result.ok) {
     return result;
   }
@@ -476,6 +631,7 @@ HubRequestResult HubService::syncSubscription(HubMessagesPersistCallback persist
   JsonArrayConst messages = jsonDoc_["messages"].as<JsonArrayConst>();
   if (messages.isNull()) {
     result.ok = false;
+    result.retryable = true;
     return result;
   }
 
@@ -526,12 +682,17 @@ HubRequestResult HubService::syncSubscription(HubMessagesPersistCallback persist
 
   if (!persisted) {
     result.ok = false;
+    result.retryable = true;
     return result;
   }
 
   if (ackCount > 0) {
     HubRequestResult ackResult = ackMessages(ackIds, ackCount);
     ok = ok && ackResult.ok;
+    if (!ackResult.ok) {
+      result.statusCode = ackResult.statusCode;
+      result.retryable = ackResult.retryable;
+    }
   }
 
   result.ok = ok;
@@ -550,6 +711,7 @@ HubRequestResult HubService::fetchWeather() {
 
   HubWeather weather;
   result.ok = parseWeather(jsonDoc_["weather"], weather);
+  result.retryable = !result.ok;
   if (result.ok) {
     lockState();
     weather_ = weather;
@@ -633,6 +795,7 @@ HubRequestResult HubService::fetchTodos() {
   JsonArray items = jsonDoc_.as<JsonArray>();
   if (items.isNull()) {
     result.ok = false;
+    result.retryable = true;
     return result;
   }
 
@@ -656,12 +819,64 @@ HubRequestResult HubService::fetchTodos() {
   }
 
   lockState();
+  size_t mergedCount = 0;
   for (size_t i = 0; i < nextCount; ++i) {
-    todos_[i] = nextTodos[i];
+    bool pendingDelete = false;
+    for (size_t deleteIndex = 0; deleteIndex < pendingTodoDeleteCount_; ++deleteIndex) {
+      pendingDelete = pendingDelete || pendingTodoDeletes_[deleteIndex].id == nextTodos[i].id;
+    }
+    if (pendingDelete) {
+      continue;
+    }
+
+    for (size_t currentIndex = 0; currentIndex < todoCount_; ++currentIndex) {
+      if (todos_[currentIndex].id == nextTodos[i].id && todos_[currentIndex].dirty) {
+        nextTodos[i].status = todos_[currentIndex].status;
+        nextTodos[i].dirty = true;
+        break;
+      }
+    }
+    todos_[mergedCount++] = nextTodos[i];
   }
-  todoCount_ = nextCount;
+  todoCount_ = mergedCount;
   unlockState();
   return result;
+}
+
+HubRequestResult HubService::patchTodoStatus(int id, int status, int version, HubTodo& updated) {
+  jsonDoc_.clear();
+  jsonDoc_["version"] = version;
+  jsonDoc_["status"] = status;
+  String body;
+  body.reserve(measureJson(jsonDoc_) + 1);
+  serializeJson(jsonDoc_, body);
+
+  char path[48];
+  snprintf(path, sizeof(path), "/device/todos/%d", id);
+  responseDoc_.clear();
+  HubRequestResult result =
+      patchJson(AuthMode::Device, path, body.c_str(), body.length(), &responseDoc_, "todo patch");
+  if (result.ok) {
+    updated.id = id;
+    updated.status = status;
+    updated.version = responseDoc_["version"] | version;
+    updated.updatedAt = responseDoc_["updated_at"] | "";
+    result.ok = updated.version > version;
+    result.retryable = !result.ok;
+  }
+  return result;
+}
+
+HubRequestResult HubService::deleteTodoByVersion(int id, int version) {
+  jsonDoc_.clear();
+  jsonDoc_["version"] = version;
+  String body;
+  body.reserve(measureJson(jsonDoc_) + 1);
+  serializeJson(jsonDoc_, body);
+
+  char path[48];
+  snprintf(path, sizeof(path), "/device/todos/%d", id);
+  return deleteJson(AuthMode::Device, path, body.c_str(), body.length(), "todo delete");
 }
 
 bool HubService::parseMessage(JsonObjectConst item, HubMessage& out) const {
@@ -778,6 +993,23 @@ HubRequestResult HubService::getJsonFiltered(AuthMode auth,
   return requestJson("GET", auth, path, nullptr, 0, &doc, label, &filter);
 }
 
+HubRequestResult HubService::patchJson(AuthMode auth,
+                                       const char* path,
+                                       const char* body,
+                                       size_t bodyLen,
+                                       JsonDocument* response,
+                                       const char* label) {
+  return requestJson("PATCH", auth, path, body, bodyLen, response, label);
+}
+
+HubRequestResult HubService::deleteJson(AuthMode auth,
+                                        const char* path,
+                                        const char* body,
+                                        size_t bodyLen,
+                                        const char* label) {
+  return requestJson("DELETE", auth, path, body, bodyLen, nullptr, label);
+}
+
 HubRequestResult HubService::requestJson(const char* method,
                                          AuthMode auth,
                                          const char* path,
@@ -804,6 +1036,7 @@ HubRequestResult HubService::requestJson(const char* method,
   url += path;
   if (!http.begin(*requestClient, url)) {
     Serial.printf("Hub: %s HTTP begin failed\n", label);
+    result.retryable = true;
     return result;
   }
 
@@ -833,6 +1066,9 @@ HubRequestResult HubService::requestJson(const char* method,
     result.statusCode = http.GET();
   }
   result.ok = result.statusCode >= 200 && result.statusCode < 300;
+  result.retryable = result.statusCode < 0 || result.statusCode == 401 ||
+                     result.statusCode == 403 || result.statusCode == 408 ||
+                     result.statusCode == 429 || result.statusCode >= 500;
   String responseBody;
   bool responseBodyLoaded = false;
   if (result.ok && response) {
@@ -846,6 +1082,7 @@ HubRequestResult HubService::requestJson(const char* method,
                                         : deserializeJson(*response, responseBody);
     result.ok = !error;
     if (error) {
+      result.retryable = true;
       Serial.printf("Hub: %s JSON failed (%s, %u bytes)\n",
                     label,
                     error.c_str(),

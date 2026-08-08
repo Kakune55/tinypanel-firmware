@@ -572,6 +572,24 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
     }
     return;
   }
+  if (state_.todoSyncRequested && hubRequestsReady()) {
+    state_.todoSyncRequested = false;
+    state_.scheduledTaskForce = false;
+    state_.scheduledTaskIncludeTelemetry = false;
+    state_.scheduledTaskTodoSyncOk = true;
+    state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
+    noteActivity();
+    markUiDirty();
+    return;
+  }
+  if (!force && state_.nextHubRetryMs != 0) {
+    if (!deadlineReached(now, state_.nextHubRetryMs)) {
+      return;
+    }
+    state_.nextHubRetryMs = 0;
+    queueScheduledTasks(false, true);
+    return;
+  }
   if (!force && state_.lastHubSyncWindowMs == 0) {
     state_.lastHubSyncWindowMs = now;
     return;
@@ -581,17 +599,7 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
   }
 
   state_.lastHubSyncWindowMs = now;
-  bool telemetryDue = includeTelemetry;
-  const uint8_t telemetryWindows = config_.telemetryEveryHubSyncWindows;
-  if (!telemetryDue && telemetryWindows > 0) {
-    ++state_.hubSyncWindowCount;
-    if (state_.hubSyncWindowCount >= telemetryWindows) {
-      state_.hubSyncWindowCount = 0;
-      telemetryDue = true;
-    }
-  }
-
-  queueScheduledTasks(force, telemetryDue);
+  queueScheduledTasks(force, true);
 }
 
 bool AppController::runNextInitialHubSyncStep() {
@@ -685,7 +693,7 @@ bool AppController::runNextScheduledTask() {
       return true;
     case State::ScheduledTaskStep::Telemetry:
       if (hubRequestsReady()) {
-        syncHubTelemetry(true);
+        syncHubTelemetry(state_.scheduledTaskForce);
       } else {
         advanceScheduledStep();
       }
@@ -751,6 +759,15 @@ void AppController::handleIoResult() {
   } else if (owner == State::IoOwner::Scheduled) {
     const bool todoSyncOk = result.type != AppIoJobType::HubTodoChanges || result.operationOk;
     advanceScheduledStep(todoSyncOk);
+  }
+  if (result.request.attempted && !result.request.ok && result.request.retryable) {
+    state_.nextHubRetryMs = millis() + config_.hubFailureRetryMs;
+    Serial.printf("Hub: retry queued in %lu ms\n",
+                  static_cast<unsigned long>(config_.hubFailureRetryMs));
+  }
+  if (result.request.statusCode == 401 || result.request.statusCode == 403) {
+    state_.hubHelloPending = hub_.canHello();
+    state_.nextHubHelloMs = millis();
   }
   markUiDirty();
 }
@@ -886,6 +903,9 @@ void AppController::advanceScheduledStep(bool todoSyncOk) {
       break;
     case State::ScheduledTaskStep::TodoSync:
       state_.scheduledTaskTodoSyncOk = todoSyncOk;
+      if (hub_.hasPendingTodoChanges()) {
+        state_.todoSyncRequested = true;
+      }
       state_.scheduledTaskStep = todoSyncOk ? State::ScheduledTaskStep::Todos : State::ScheduledTaskStep::Weather;
       break;
     case State::ScheduledTaskStep::Todos:
@@ -1138,6 +1158,7 @@ void AppController::handleTodoStatusToggle() {
   const int nextStatus = (todo->status + 1) % 3;
   if (hub_.setTodoStatusLocal(state_.selectedTodo, nextStatus)) {
     refreshHubSnapshot();
+    state_.todoSyncRequested = true;
     markUiDirty();
   }
 }
@@ -1150,6 +1171,7 @@ void AppController::handleTodoDelete() {
 
   if (hub_.deleteTodoLocal(state_.selectedTodo)) {
     refreshHubSnapshot();
+    state_.todoSyncRequested = true;
     const size_t count = hubSnapshot_.todoCount;
     if (count == 0) {
       state_.selectedTodo = 0;
