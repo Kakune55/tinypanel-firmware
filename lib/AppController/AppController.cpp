@@ -533,7 +533,7 @@ void AppController::handleWifi() {
 
   AppIoRequest request;
   request.type = AppIoJobType::WifiConnect;
-  request.timeoutMs = 5000;
+  request.timeoutMs = 15000;
   if (submitIo(request, State::IoOwner::WifiReconnect)) {
     state_.lastWifiRetryMs = now;
     state_.nextWifiRetryMs = 0;

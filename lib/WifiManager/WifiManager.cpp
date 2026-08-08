@@ -5,6 +5,65 @@
 
 namespace {
 
+const char* authModeName(wifi_auth_mode_t authMode) {
+  switch (authMode) {
+    case WIFI_AUTH_OPEN:
+      return "open";
+    case WIFI_AUTH_WEP:
+      return "WEP";
+    case WIFI_AUTH_WPA_PSK:
+      return "WPA";
+    case WIFI_AUTH_WPA2_PSK:
+      return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK:
+      return "WPA/WPA2";
+    case WIFI_AUTH_WPA2_ENTERPRISE:
+      return "WPA2-EAP";
+    case WIFI_AUTH_WPA3_PSK:
+      return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK:
+      return "WPA2/WPA3";
+    case WIFI_AUTH_WAPI_PSK:
+      return "WAPI";
+    default:
+      return "unknown";
+  }
+}
+
+const char* signalLevel(int32_t rssi) {
+  if (rssi >= -50) {
+    return "excellent";
+  }
+  if (rssi >= -60) {
+    return "good";
+  }
+  if (rssi >= -70) {
+    return "fair";
+  }
+  return "weak";
+}
+
+const char* connectionStatusName(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS:
+      return "idle";
+    case WL_NO_SSID_AVAIL:
+      return "SSID unavailable";
+    case WL_SCAN_COMPLETED:
+      return "scan completed";
+    case WL_CONNECTED:
+      return "connected";
+    case WL_CONNECT_FAILED:
+      return "authentication/connect failed";
+    case WL_CONNECTION_LOST:
+      return "connection lost";
+    case WL_DISCONNECTED:
+      return "disconnected";
+    default:
+      return "unknown";
+  }
+}
+
 void enableMaxModemSleep() {
   WiFi.setSleep(true);
   esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
@@ -79,6 +138,26 @@ bool WifiManager::connect(uint32_t timeoutMs) {
   Serial.println("WiFi: scanning");
   const int scanCount = WiFi.scanNetworks(false, true);
   if (scanCount >= 0) {
+    Serial.printf("WiFi: found %d network(s)\n", scanCount);
+    for (int networkIndex = 0; networkIndex < scanCount; ++networkIndex) {
+      const String scannedSsid = WiFi.SSID(networkIndex);
+      bool configured = false;
+      for (size_t credentialIndex = 0; credentialIndex < credentialCount_; ++credentialIndex) {
+        configured = configured ||
+                     (credentialValid(credentialIndex) && scannedSsid == credentials_[credentialIndex].ssid);
+      }
+
+      const int32_t scannedRssi = WiFi.RSSI(networkIndex);
+      Serial.printf("WiFi:   %d. SSID=\"%s\", RSSI=%ld dBm (%s), channel=%ld, security=%s%s\n",
+                    networkIndex + 1,
+                    scannedSsid.isEmpty() ? "<hidden>" : scannedSsid.c_str(),
+                    static_cast<long>(scannedRssi),
+                    signalLevel(scannedRssi),
+                    static_cast<long>(WiFi.channel(networkIndex)),
+                    authModeName(WiFi.encryptionType(networkIndex)),
+                    configured ? ", configured" : "");
+    }
+
     while (scanCandidateCount < kMaxScanCandidates) {
       int bestRssi = -1000;
       size_t bestIndex = credentialCount_;
@@ -207,6 +286,11 @@ bool WifiManager::connectCredential(size_t index, uint32_t timeoutMs) {
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
+    const wl_status_t status = WiFi.status();
+    Serial.printf("WiFi: connection to %s failed, status=%s (%d)\n",
+                  credential.ssid,
+                  connectionStatusName(status),
+                  static_cast<int>(status));
     return false;
   }
 
