@@ -23,7 +23,7 @@ constexpr uint8_t kSystemActionCanvas = 5;
 constexpr uint8_t kSystemActionBack = 6;
 constexpr uint8_t kSystemActionCount = 7;
 constexpr uint32_t kMessageDeleteProgressShowMs = 400;
-constexpr uint32_t kSerialCanvasIdleFlushMs = 60;
+constexpr uint32_t kSerialCanvasFlushIntervalMs = 200;
 constexpr float kBatteryVoltageDirtyDelta = 0.03f;
 constexpr float kBatteryPercentDirtyDelta = 1.0f;
 constexpr float kTemperatureDirtyDelta = 0.1f;
@@ -1335,7 +1335,8 @@ void AppController::handleSerialCanvasMode() {
 
   processSerialCanvasInput();
   if (state_.serialCanvasFlushPending &&
-      millis() - state_.lastSerialCanvasInputMs >= kSerialCanvasIdleFlushMs) {
+      (state_.lastSerialCanvasFlushMs == 0 ||
+       millis() - state_.lastSerialCanvasFlushMs >= kSerialCanvasFlushIntervalMs)) {
     requestSerialCanvasFlush(true);
   }
 }
@@ -1524,7 +1525,8 @@ void AppController::processSerialCanvasLine(char* line) {
 
 void AppController::requestSerialCanvasFlush(bool force) {
   const uint32_t now = millis();
-  if (!force) {
+  if (!force || (state_.lastSerialCanvasFlushMs != 0 &&
+                 now - state_.lastSerialCanvasFlushMs < kSerialCanvasFlushIntervalMs)) {
     state_.serialCanvasFlushPending = true;
     return;
   }

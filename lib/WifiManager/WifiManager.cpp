@@ -12,19 +12,26 @@ void enableMaxModemSleep() {
 
 }  // namespace
 
-bool WifiManager::begin(const char* ssid, const char* password, uint32_t timeoutMs) {
+bool WifiManager::configure(const char* ssid, const char* password) {
   singleCredential_ = {ssid, password};
-  return begin(&singleCredential_, 1, timeoutMs);
+  return configure(&singleCredential_, 1);
 }
 
-bool WifiManager::begin(const WifiCredential* credentials, size_t credentialCount, uint32_t timeoutMs) {
+bool WifiManager::configure(const WifiCredential* credentials, size_t credentialCount) {
   credentials_ = credentials;
   credentialCount_ = credentialCount;
   activeCredential_ = 0;
   hasActiveCredential_ = false;
+  return isConfigured();
+}
 
-  WiFi.mode(WIFI_STA);
-  enableMaxModemSleep();
+bool WifiManager::begin(const char* ssid, const char* password, uint32_t timeoutMs) {
+  configure(ssid, password);
+  return connect(timeoutMs);
+}
+
+bool WifiManager::begin(const WifiCredential* credentials, size_t credentialCount, uint32_t timeoutMs) {
+  configure(credentials, credentialCount);
   return connect(timeoutMs);
 }
 

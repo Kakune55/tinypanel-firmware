@@ -270,10 +270,9 @@ void setup() {
   controller.setStorageConfigStatus(sdWifiOk, batteryCurveFromSd, messagesRestoredFromSd);
 
   if (wifiCredentialCount > 0) {
-    bootLog("wifi: connect timeout 12s");
-    const bool wifiOk = wifi.begin(wifiCredentials, wifiCredentialCount, 12000);
-    bootLogf("wifi: %s", wifiOk ? wifi.ipAddress().c_str() : "failed");
-    storageLog("wifi", wifiOk ? wifi.ipAddress().c_str() : "failed", wifiOk ? "INFO" : "WARN");
+    wifi.configure(wifiCredentials, wifiCredentialCount);
+    bootLog("wifi: background connect queued");
+    storageLog("wifi", "background connect queued");
     if (sdWifiOk) {
       Serial.println("WiFi: loaded credentials from SD");
       storageLog("wifi_config", "loaded from sd");

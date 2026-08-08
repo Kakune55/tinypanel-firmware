@@ -6,6 +6,8 @@
 
 class WifiManager {
 public:
+  bool configure(const char* ssid, const char* password);
+  bool configure(const WifiCredential* credentials, size_t credentialCount);
   bool begin(const char* ssid, const char* password, uint32_t timeoutMs = 15000);
   bool begin(const WifiCredential* credentials, size_t credentialCount, uint32_t timeoutMs = 15000);
   bool connect(uint32_t timeoutMs = 15000);
