@@ -207,10 +207,14 @@ void AppIoWorker::taskLoop() {
 
     Serial.printf("IO: %s start\n", jobName(request.type));
     AppIoResult result = execute(request);
-    Serial.printf("IO: %s end ok=%d duration=%lu ms\n",
+    Serial.printf("IO: %s end ok=%d status=%d retry=%d duration=%lu ms heap=%u stack=%u\n",
                   jobName(request.type),
                   result.operationOk ? 1 : 0,
-                  static_cast<unsigned long>(result.durationMs));
+                  result.request.statusCode,
+                  result.request.retryable ? 1 : 0,
+                  static_cast<unsigned long>(result.durationMs),
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 
     xSemaphoreTake(mutex_, portMAX_DELAY);
     result_ = result;
@@ -243,20 +247,20 @@ AppIoResult AppIoWorker::execute(AppIoRequest& request) {
       break;
     case AppIoJobType::HubTelemetry:
       result.request = hub_.syncTelemetry(request.telemetry, request.force, wifi_.isConnected(), nullptr);
-      result.operationOk = result.request.ok;
+      result.operationOk = !result.request.attempted || result.request.ok;
       break;
     case AppIoJobType::HubMessages:
       result.request = hub_.pollMessages(
           request.force, wifi_.isConnected(), nullptr, millis(), persistMessages, &storage_);
-      result.operationOk = result.request.ok;
+      result.operationOk = !result.request.attempted || result.request.ok;
       break;
     case AppIoJobType::HubWeather:
       result.request = hub_.pollWeather(request.force, wifi_.isConnected(), nullptr);
-      result.operationOk = result.request.ok;
+      result.operationOk = !result.request.attempted || result.request.ok;
       break;
     case AppIoJobType::HubTodos:
       result.request = hub_.pollTodos(request.force, wifi_.isConnected(), nullptr);
-      result.operationOk = result.request.ok;
+      result.operationOk = !result.request.attempted || result.request.ok;
       break;
     case AppIoJobType::HubTodoChanges:
       result.request = hub_.syncTodoChanges(wifi_.isConnected(), nullptr);

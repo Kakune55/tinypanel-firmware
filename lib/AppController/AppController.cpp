@@ -580,6 +580,14 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
     }
     return;
   }
+  if (!force && state_.nextHubRetryMs != 0) {
+    if (!deadlineReached(now, state_.nextHubRetryMs)) {
+      return;
+    }
+    state_.nextHubRetryMs = 0;
+    queueScheduledTasks(false, true);
+    return;
+  }
   if (state_.todoSyncRequested && hubRequestsReady()) {
     state_.todoSyncRequested = false;
     state_.scheduledTaskForce = false;
@@ -588,14 +596,6 @@ void AppController::runScheduledTasks(bool force, bool includeTelemetry) {
     state_.scheduledTaskStep = State::ScheduledTaskStep::TodoSync;
     noteActivity();
     markUiDirty();
-    return;
-  }
-  if (!force && state_.nextHubRetryMs != 0) {
-    if (!deadlineReached(now, state_.nextHubRetryMs)) {
-      return;
-    }
-    state_.nextHubRetryMs = 0;
-    queueScheduledTasks(false, true);
     return;
   }
   if (!force && state_.lastHubSyncWindowMs == 0) {
