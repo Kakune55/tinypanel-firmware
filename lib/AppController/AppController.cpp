@@ -782,7 +782,13 @@ void AppController::handleIoResult() {
     Serial.printf("Hub: retry queued in %lu ms\n",
                   static_cast<unsigned long>(config_.hubFailureRetryMs));
   }
-  if (result.request.statusCode == 401 || result.request.statusCode == 403) {
+  if (result.request.statusCode == 401) {
+    hub_.setDeviceSecret("");
+    refreshHubSnapshot();
+    state_.hubHelloPending = hub_.canHello();
+    state_.nextHubHelloMs = millis();
+    Serial.println("Hub: expired credential cleared, registration queued");
+  } else if (result.request.statusCode == 403) {
     state_.hubHelloPending = hub_.canHello();
     state_.nextHubHelloMs = millis();
   }
