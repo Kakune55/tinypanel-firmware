@@ -20,11 +20,6 @@ const char* batteryStatusText(const BatteryStatus& battery, bool usbConnected) {
   return battery.critical ? "critical" : "discharging";
 }
 
-bool hasUsableSecret(const String& value) {
-  return value.length() > 0 && value != "YOUR_HUB_SERVER_API_KEY" &&
-         value != "YOUR_HUB_DEVICE_SECRET";
-}
-
 }  // namespace
 
 HubService::HubService() {
@@ -161,15 +156,27 @@ HubHelloResult HubService::hello(bool networkReady, HubStateChangedCallback onSt
 
   beginRequest(nowMs, onStateChanged);
   HubHelloResult result = sendHello();
-  if (result.ok && result.deviceSecret.length() > 0) {
-    setDeviceSecret(result.deviceSecret.c_str());
-  }
   if (result.ok) {
     lockState();
-    bound_ = result.bound;
-    bindCode_ = result.bindCode;
-    deviceName_ = result.name;
+    if (hasUsableCredential(result.deviceSecret.c_str())) {
+      deviceSecret_ = result.deviceSecret;
+    } else if (hasUsableCredential(deviceSecret_.c_str())) {
+      // Hub only issues device_secret during first registration. A successful
+      // hello for an existing device confirms the secret sent in the request,
+      // so keep returning that effective credential to the persistence layer.
+      result.deviceSecret = deviceSecret_;
+    } else {
+      result.ok = false;
+    }
+    if (result.ok) {
+      bound_ = result.bound;
+      bindCode_ = result.bindCode;
+      deviceName_ = result.name;
+    }
     unlockState();
+    if (!result.ok) {
+      Serial.println("Hub: device hello response missing usable secret");
+    }
   }
   completeRequest(result, nowMs);
   return result;
@@ -1064,7 +1071,7 @@ HubRequestResult HubService::requestJson(const char* method,
     http.addHeader("X-Device-Secret", deviceSecret_);
   } else {
     http.addHeader("X-Device-ID", deviceId_);
-    if (hasUsableSecret(deviceSecret_)) {
+    if (hasUsableCredential(deviceSecret_.c_str())) {
       http.addHeader("X-Device-Secret", deviceSecret_);
     }
   }
@@ -1085,8 +1092,7 @@ HubRequestResult HubService::requestJson(const char* method,
     result.statusCode = http.GET();
   }
   result.ok = result.statusCode >= 200 && result.statusCode < 300;
-  result.retryable = result.statusCode < 0 || result.statusCode == 401 ||
-                     result.statusCode == 403 || result.statusCode == 408 ||
+  result.retryable = result.statusCode < 0 || result.statusCode == 408 ||
                      result.statusCode == 429 || result.statusCode >= 500;
   String responseBody;
   bool responseBodyLoaded = false;

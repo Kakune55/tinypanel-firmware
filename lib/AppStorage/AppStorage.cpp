@@ -259,7 +259,7 @@ bool AppStorage::loadHubCredentials(StoredHubCredentials& out) const {
 }
 
 bool AppStorage::saveHubCredentials(const StoredHubCredentials& credentials) {
-  if (!isReady()) {
+  if (!isReady() || credentials.deviceSecret[0] == '\0') {
     return false;
   }
 

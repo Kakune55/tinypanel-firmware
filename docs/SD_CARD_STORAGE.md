@@ -196,3 +196,7 @@ constexpr const char* HubServerApiKey = "YOUR_HUB_DEVICE_SECRET";
 `HubServerApiKey` 保留旧字段名用于兼容现有 `AppSecrets.h`，新版 Hub 中它表示设备
 secret。也可以留空或使用 `YOUR_*` 占位，让固件通过 device hello 自动获取并写入
 `/tinypanel/state/hub.json`。
+
+Hub 只在首次注册时返回新的 `device_secret`。已有设备使用正确 secret 调用
+hello 时，响应不再重复返回该字段；固件会保留并继续持久化本次请求使用的
+secret，不会用空字段覆盖已有凭据。

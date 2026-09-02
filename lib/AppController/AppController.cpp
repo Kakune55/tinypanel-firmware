@@ -720,7 +720,7 @@ void AppController::queueScheduledTasks(bool force, bool includeTelemetry) {
 }
 
 bool AppController::hubRequestsReady() const {
-  return hub_.isConfigured() && wifi_.isConnected();
+  return hub_.isConfigured() && wifi_.isConnected() && !state_.hubHelloPending;
 }
 
 bool AppController::submitIo(const AppIoRequest& request, State::IoOwner owner) {
@@ -782,15 +782,17 @@ void AppController::handleIoResult() {
     Serial.printf("Hub: retry queued in %lu ms\n",
                   static_cast<unsigned long>(config_.hubFailureRetryMs));
   }
-  if (result.request.statusCode == 401) {
-    hub_.setDeviceSecret("");
-    refreshHubSnapshot();
-    state_.hubHelloPending = hub_.canHello();
-    state_.nextHubHelloMs = millis();
-    Serial.println("Hub: expired credential cleared, registration queued");
-  } else if (result.request.statusCode == 403) {
-    state_.hubHelloPending = hub_.canHello();
-    state_.nextHubHelloMs = millis();
+  const bool hubAuthFailed = result.request.statusCode == 401 || result.request.statusCode == 403;
+  if (hubAuthFailed && result.type != AppIoJobType::HubHello) {
+    if (!state_.hubHelloPending) {
+      state_.hubHelloPending = hub_.canHello();
+      state_.nextHubHelloMs = millis();
+      Serial.println("Hub: device credentials rejected, hello queued");
+    } else {
+      Serial.println("Hub: device credentials rejected, hello already pending");
+    }
+  } else if (hubAuthFailed) {
+    Serial.println("Hub: hello unauthorized, keeping credentials and retry backoff");
   }
   markUiDirty();
 }
